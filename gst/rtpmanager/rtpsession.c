@@ -1585,8 +1585,9 @@ obtain_source (RTPSession * sess, guint32 ssrc, gboolean * created,
   } else {
     *created = FALSE;
     /* check for collision, this updates the address when not previously set */
+
     if (check_collision (sess, source, pinfo, rtp)) {
-      return NULL;
+      //return NULL;
     }
     /* Receiving RTCP packets of an SSRC is a strong indication that we
      * are dealing with a valid source. */
