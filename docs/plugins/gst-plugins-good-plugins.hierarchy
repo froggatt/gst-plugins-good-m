@@ -118,6 +118,7 @@ GObject
           GstRgLimiter
           GstScaletempo
           GstTagInject
+          GstTry
           GstVideoFilter
             GstAgingTV
             GstAlpha
@@ -178,6 +179,10 @@ GObject
         GstMatroskaMux
           GstWebMMux
         GstMatroskaParse
+        GstMprtpplayouter
+        GstMprtpreceiver
+        GstMprtpscheduler
+        GstMprtpsender
         GstMultipartDemux
         GstMultipartMux
         GstQTDemux

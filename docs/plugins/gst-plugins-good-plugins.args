@@ -20495,7 +20495,7 @@
 <FLAGS>rw</FLAGS>
 <NICK>Client Name</NICK>
 <BLURB>The PulseAudio client name to use.</BLURB>
-<DEFAULT>"lt-gst-plugins-good-plugins-scan"</DEFAULT>
+<DEFAULT>"gst-plugins-good-plugins-scan"</DEFAULT>
 </ARG>
 
 <ARG>
@@ -20595,7 +20595,7 @@
 <FLAGS>rw</FLAGS>
 <NICK>Client Name</NICK>
 <BLURB>The PulseAudio client_name_to_use.</BLURB>
-<DEFAULT>"lt-gst-plugins-good-plugins-scan"</DEFAULT>
+<DEFAULT>"gst-plugins-good-plugins-scan"</DEFAULT>
 </ARG>
 
 <ARG>
@@ -25256,5 +25256,105 @@
 <NICK>Sink</NICK>
 <BLURB>The sink element (or element chain) to use (NULL = default filesink).</BLURB>
 <DEFAULT></DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpscheduler::detach-subflow</NAME>
+<TYPE>guint</TYPE>
+<RANGE><= 255</RANGE>
+<FLAGS>w</FLAGS>
+<NICK>the subflow id requested to detach</NICK>
+<BLURB>Detach a subflow with a given id.</BLURB>
+<DEFAULT>0</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpscheduler::join-subflow</NAME>
+<TYPE>guint</TYPE>
+<RANGE><= 255</RANGE>
+<FLAGS>w</FLAGS>
+<NICK>the subflow id requested to join</NICK>
+<BLURB>Join a subflow with a given id.</BLURB>
+<DEFAULT>0</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpscheduler::subflow-manual-rate-enabled</NAME>
+<TYPE>gboolean</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>Enable or disable the subflow rate manual changes</NICK>
+<BLURB>Enable or disable the subflow rate manual changes.</BLURB>
+<DEFAULT>FALSE</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpscheduler::subflow-rate</NAME>
+<TYPE>GValueArray*</TYPE>
+<RANGE></RANGE>
+<FLAGS>w</FLAGS>
+<NICK>Set subflow rate</NICK>
+<BLURB>Setup the sending rate for a specific subflow.</BLURB>
+<DEFAULT></DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpscheduler::subflow-riports-enabled</NAME>
+<TYPE>gboolean</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>enable or disable the subflow riports</NICK>
+<BLURB>Enable or Disable sending subflow SR riports.</BLURB>
+<DEFAULT>TRUE</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpplayouter::detach-subflow</NAME>
+<TYPE>guint</TYPE>
+<RANGE><= 255</RANGE>
+<FLAGS>w</FLAGS>
+<NICK>the subflow id requested to detach</NICK>
+<BLURB>Detach a subflow with a given id.</BLURB>
+<DEFAULT>0</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpplayouter::join-subflow</NAME>
+<TYPE>guint</TYPE>
+<RANGE><= 255</RANGE>
+<FLAGS>w</FLAGS>
+<NICK>the subflow id requested to join</NICK>
+<BLURB>Join a subflow with a given id.</BLURB>
+<DEFAULT>0</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpplayouter::pivot-clock-rate</NAME>
+<TYPE>guint</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>Clock rate of the pivot stream</NICK>
+<BLURB>Sets the clock rate of the pivot stream used for calculating skew and playout delay at the receiver.</BLURB>
+<DEFAULT>0</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpplayouter::pivot-ssrc</NAME>
+<TYPE>guint</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>SSRC of the pivot stream</NICK>
+<BLURB>Sets the ssrc of the pivot stream used selecting MPRTP packets for playout delay at the receiver.</BLURB>
+<DEFAULT>0</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstMprtpplayouter::subflow-riports-enabled</NAME>
+<TYPE>gboolean</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>enable or disable the subflow riports</NICK>
+<BLURB>Enable or Disable sending subflow SR riports.</BLURB>
+<DEFAULT>TRUE</DEFAULT>
 </ARG>
 

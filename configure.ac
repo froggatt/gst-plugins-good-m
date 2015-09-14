@@ -367,6 +367,7 @@ AG_GST_CHECK_PLUGIN(videomixer)
 AG_GST_CHECK_PLUGIN(wavenc)
 AG_GST_CHECK_PLUGIN(wavparse)
 AG_GST_CHECK_PLUGIN(y4m)
+AG_GST_CHECK_PLUGIN(mprtp)
 
 dnl disable experimental plug-ins
 if test "x$BUILD_EXPERIMENTAL" != "xyes"; then
@@ -985,6 +986,7 @@ gst/wavenc/Makefile
 gst/wavparse/Makefile
 gst/flx/Makefile
 gst/y4m/Makefile
+gst/mprtp/Makefile
 ext/Makefile
 ext/aalib/Makefile
 ext/cairo/Makefile
