@@ -315,32 +315,6 @@ gst_mprtpscheduler_rtp_sink_getcaps (GstPad * pad)
 }
 
 static void
-gst_mprtpscheduler_rtp_sink_setcaps (GstPad * pad, GstCaps * caps)
-{
-  g_print ("gst_mprtpscheduler_rtp_sink_setcaps\n");
-}
-
-static GstCaps *
-gst_mprtpscheduler_rtp_sink_getcaps (GstPad * pad)
-{
-  g_print ("gst_mprtpscheduler_rtp_sink_getcaps\n");
-  return NULL;
-}
-
-static void
-gst_mprtpscheduler_mprtp_src_setcaps (GstPad * pad, GstCaps * caps)
-{
-  g_print ("gst_mprtpscheduler_mprtp_src_setcaps\n");
-}
-
-static GstCaps *
-gst_mprtpscheduler_mprtp_src_getcaps (GstPad * pad)
-{
-  g_print ("gst_mprtpscheduler_mprtp_src_getcaps\n");
-  return NULL;
-}
-
-static void
 gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
 {
   SchTree *schtree;
@@ -348,20 +322,11 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
       gst_pad_new_from_static_template (&gst_mprtpscheduler_rtp_sink_template,
       "rtp_sink");
 
+
   gst_pad_set_chain_function (mprtpscheduler->rtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_chain));
   gst_pad_set_chain_list_function (mprtpscheduler->rtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_chainlist));
-
-  gst_pad_set_setcaps_function (mprtpscheduler->rtp_sinkpad,
-      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_setcaps));
-  gst_pad_set_getcaps_function (mprtpscheduler->rtp_sinkpad,
-      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_getcaps));
-
-  gst_pad_set_setcaps_function (mprtpscheduler->mprtp_srcpad,
-      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_mprtp_src_setcaps));
-  gst_pad_set_getcaps_function (mprtpscheduler->mprtp_srcpad,
-      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_mprtp_src_getcaps));
 
 
   gst_element_add_pad (GST_ELEMENT (mprtpscheduler),
@@ -392,7 +357,7 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
       "mprtp_src");
   gst_pad_set_event_function (mprtpscheduler->mprtp_srcpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_mprtp_src_event));
-
+  gst_pad_use_fixed_caps (mprtpscheduler->mprtp_srcpad);
   gst_element_add_pad (GST_ELEMENT (mprtpscheduler),
       mprtpscheduler->mprtp_srcpad);
 
