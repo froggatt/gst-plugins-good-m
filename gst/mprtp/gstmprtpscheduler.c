@@ -302,59 +302,6 @@ _detach_subflow (GstMprtpscheduler * this, guint subflow_id)
 }
 
 
-static GstCaps *
-gst_mprtp_sink_getcaps (GstPad * pad)
-{
-  GstMprtpscheduler *this;
-  GstPad *otherpad;
-  GstCaps *result, *caps;
-  const GstCaps *tcaps;
-
-  this = GST_MPRTPSCHEDULER (gst_pad_get_parent (pad));
-  /* we want to proxy properties from the
-     other end of the element */
-  otherpad =
-      (pad == this->mprtp_srcpad) ? this->rtp_sinkpad : this->mprtp_srcpad;
-
-  /* get template caps, we always need this to fiter the peer caps */
-  tcaps = gst_pad_get_pad_template_caps (otherpad);
-
-  /* get any constraints on the peer pad */
-  caps = gst_pad_peer_get_caps (otherpad);
-
-  if (caps == NULL)
-    caps = gst_caps_copy (tcaps);
-  else
-    caps = gst_caps_make_writable (caps);
-
-  /* intersect with the template */
-  result = gst_caps_intersect (caps, tcaps);
-  gst_caps_unref (caps);
-
-  gst_object_unref (this);
-
-  return result;
-}
-
-static gboolean
-gst_mprtp_sink_setcaps (GstPad * pad, GstCaps * caps)
-{
-  GstMprtpscheduler *this;
-  gboolean ret;
-  GstCaps *srccaps;
-
-  this = GST_MPRTPSCHEDULER (gst_pad_get_parent (pad));
-  srccaps = gst_caps_copy (caps);
-
-  ret = gst_pad_set_caps (this->mprtp_srcpad, srccaps);
-  gst_caps_unref (srccaps);
-
-  gst_object_unref (this);
-
-  return ret;
-}
-
-
 static void
 gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
 {

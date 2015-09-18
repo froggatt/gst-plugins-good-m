@@ -586,7 +586,9 @@ mprtpr_subflow_process_rtpbuffer (MPRTPRSubflow * this, GstBuffer * buf,
   guint payload_size;
   guint packet_size;
   g_mutex_lock (&this->mutex);
-  //printf("Packet is received by (%d-%d) path receiver with %d absolute sequence and %d subflow sequence\n",this->id, actual->subflow_id, actual->absolute_sequence, actual->subflow_sequence);
+  printf ("Packet is received by %d path receiver "
+      "with %d relative sequence\n", this->id, subflow_sequence);
+
   if (this->seq_initialized == FALSE) {
     this->actual_seq = subflow_sequence;
     this->HSN = subflow_sequence;
