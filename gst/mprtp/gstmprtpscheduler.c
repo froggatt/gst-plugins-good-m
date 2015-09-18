@@ -301,7 +301,44 @@ _detach_subflow (GstMprtpscheduler * this, guint subflow_id)
 
 }
 
+static void
+gst_mprtpscheduler_rtp_sink_setcaps (GstPad * pad, GstCaps * caps)
+{
+  g_print ("gst_mprtpscheduler_rtp_sink_setcaps\n");
+}
 
+static GstCaps *
+gst_mprtpscheduler_rtp_sink_getcaps (GstPad * pad)
+{
+  g_print ("gst_mprtpscheduler_rtp_sink_getcaps\n");
+  return NULL;
+}
+
+static void
+gst_mprtpscheduler_rtp_sink_setcaps (GstPad * pad, GstCaps * caps)
+{
+  g_print ("gst_mprtpscheduler_rtp_sink_setcaps\n");
+}
+
+static GstCaps *
+gst_mprtpscheduler_rtp_sink_getcaps (GstPad * pad)
+{
+  g_print ("gst_mprtpscheduler_rtp_sink_getcaps\n");
+  return NULL;
+}
+
+static void
+gst_mprtpscheduler_mprtp_src_setcaps (GstPad * pad, GstCaps * caps)
+{
+  g_print ("gst_mprtpscheduler_mprtp_src_setcaps\n");
+}
+
+static GstCaps *
+gst_mprtpscheduler_mprtp_src_getcaps (GstPad * pad)
+{
+  g_print ("gst_mprtpscheduler_mprtp_src_getcaps\n");
+  return NULL;
+}
 
 static void
 gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
@@ -315,6 +352,16 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_chain));
   gst_pad_set_chain_list_function (mprtpscheduler->rtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_chainlist));
+
+  gst_pad_set_setcaps_function (mprtpscheduler->rtp_sinkpad,
+      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_setcaps));
+  gst_pad_set_getcaps_function (mprtpscheduler->rtp_sinkpad,
+      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_getcaps));
+
+  gst_pad_set_setcaps_function (mprtpscheduler->mprtp_srcpad,
+      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_mprtp_src_setcaps));
+  gst_pad_set_getcaps_function (mprtpscheduler->mprtp_srcpad,
+      GST_DEBUG_FUNCPTR (gst_mprtpscheduler_mprtp_src_getcaps));
 
 
   gst_element_add_pad (GST_ELEMENT (mprtpscheduler),
