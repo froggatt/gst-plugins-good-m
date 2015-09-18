@@ -241,8 +241,8 @@ schtree_commit_changes (SchTree * tree)
     //g_print("subflow %d new rate: %f\n", path->get_id(path),
     //      tree->path_values[index] / sum);
 //
-    g_print ("%p -> insert subflow %d: %d ( %f%%)\n",
-        tree, path->get_id (path), insert_value,
+    //g_print ("%p -> insert subflow %d: %d ( %f%%)\n",
+    tree, path->get_id (path), insert_value,
         actual_value / tree->max_value * 100.0);
     //g_print("path value is %f\n",tree->path_values[index]);
     if (tree->path_values[index] > 0.0) {
@@ -261,8 +261,7 @@ schtree_commit_changes (SchTree * tree)
 }
 
 
-void
-_schnode_rdtor (SchNode * node)
+void _schnode_rdtor (SchNode * node)
 {
   if (node == NULL) {
     return;
@@ -272,8 +271,7 @@ _schnode_rdtor (SchNode * node)
   g_free (node);
 }
 
-void
-_schnode_overlap_trees (SchNode * old_node, SchNode * new_node)
+void _schnode_overlap_trees (SchNode * old_node, SchNode * new_node)
 {
   if (old_node == NULL || new_node == NULL) {
     return;
@@ -288,8 +286,7 @@ _schnode_overlap_trees (SchNode * old_node, SchNode * new_node)
   _schnode_overlap_trees (old_node->right, new_node->right);
 }
 
-void
-schtree_setup_change (SchTree * tree, MPRTPSSubflow * path, gfloat value)
+void schtree_setup_change (SchTree * tree, MPRTPSSubflow * path, gfloat value)
 {
   gint32 index;
   g_rw_lock_writer_lock (&tree->rwmutex);
@@ -319,8 +316,7 @@ schtree_set_path_and_values_done:
 }
 
 
-void
-schtree_delete_path (SchTree * tree, MPRTPSSubflow * path)
+void schtree_delete_path (SchTree * tree, MPRTPSSubflow * path)
 {
   gint32 index;
   g_rw_lock_writer_lock (&tree->rwmutex);
@@ -342,8 +338,7 @@ schtree_delete_path_done:
   g_rw_lock_writer_unlock (&tree->rwmutex);
 }
 
-void
-_schtree_insert (SchNode ** node, MPRTPSSubflow * path, gint * change,
+void _schtree_insert (SchNode ** node, MPRTPSSubflow * path, gint * change,
     gint level_value)
 {
   if (*node == NULL) {
@@ -407,8 +402,7 @@ _schtree_insert (SchNode ** node, MPRTPSSubflow * path, gint * change,
 //  }
 //}
 
-SchNode *
-_schnode_ctor (void)
+SchNode *_schnode_ctor (void)
 {
   SchNode *result = (SchNode *) g_malloc0 (sizeof (SchNode));
   result->left = NULL;
@@ -418,8 +412,7 @@ _schnode_ctor (void)
   return result;
 }
 
-MPRTPSSubflow *
-schtree_get_next (SchTree * tree)
+MPRTPSSubflow *schtree_get_next (SchTree * tree)
 {
   MPRTPSSubflow *result;
   SchNode *selected;
@@ -435,8 +428,7 @@ schtree_get_next (SchTree * tree)
   return result;
 }
 
-MPRTPSSubflow *
-schtree_get_actual (SchTree * tree)
+MPRTPSSubflow *schtree_get_actual (SchTree * tree)
 {
   MPRTPSSubflow *result;
   SchNode *selected;
@@ -464,14 +456,12 @@ schtree_get_actual (SchTree * tree)
 //  return result;
 //}
 
-void
-schtree_print (SchTree * tree)
+void schtree_print (SchTree * tree)
 {
   _print_tree (tree->root, 128, 0);
 }
 
-void
-_print_tree (SchNode * node, gint top, gint level)
+void _print_tree (SchNode * node, gint top, gint level)
 {
   gint i;
   if (node == NULL) {
