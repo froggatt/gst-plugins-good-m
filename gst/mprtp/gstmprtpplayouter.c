@@ -543,7 +543,7 @@ gst_mprtpplayouter_playouter_run (void *data)
 
     L = _merge_lists (F, L);
     path_skew = subflow->get_skews_median (subflow);
-    //g_print("Median: %llu ", path_skew);
+    g_print ("Median: %llu ", path_skew);
     this->path_skews[this->path_skew_index++] = path_skew;
     if (this->path_skew_index == 256) {
       this->path_skew_index = 0;

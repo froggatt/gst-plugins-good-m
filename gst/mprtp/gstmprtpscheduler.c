@@ -369,10 +369,9 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
   gst_pad_set_chain_list_function (mprtpscheduler->rtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_chainlist));
 
-  gst_pad_set_getcaps_function (mprtpscheduler->rtp_sinkpad,
-      gst_mprtp_sink_getcaps);
-  gst_pad_set_setcaps_function (mprtpscheduler->rtp_sinkpad,
-      gst_mprtp_sink_setcaps);
+  GST_PAD_SET_PROXY_CAPS (mprtpscheduler->rtp_sinkpad);
+  GST_PAD_SET_PROXY_ALLOCATION (mprtpscheduler->rtp_sinkpad);
+
 
   gst_element_add_pad (GST_ELEMENT (mprtpscheduler),
       mprtpscheduler->rtp_sinkpad);
@@ -404,6 +403,9 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
   gst_pad_set_event_function (mprtpscheduler->mprtp_srcpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_mprtp_src_event));
   gst_pad_use_fixed_caps (mprtpscheduler->mprtp_srcpad);
+  GST_PAD_SET_PROXY_CAPS (mprtpscheduler->mprtp_srcpad);
+  GST_PAD_SET_PROXY_ALLOCATION (mprtpscheduler->mprtp_srcpad);
+
   gst_element_add_pad (GST_ELEMENT (mprtpscheduler),
       mprtpscheduler->mprtp_srcpad);
 
