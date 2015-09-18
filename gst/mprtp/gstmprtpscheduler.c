@@ -261,6 +261,7 @@ gst_mprtpscheduler_mprtp_src_event (GstPad * pad, GstObject * parent,
   gboolean result;
 
   this = GST_MPRTPSCHEDULER (parent);
+  g_print ("MprtpScheduler->Event: %s\n", GST_EVENT_TYPE_NAME (event));
   THIS_LOCK (this);
   switch (GST_EVENT_TYPE (event)) {
     default:
@@ -642,7 +643,7 @@ gst_mprtpscheduler_query (GstElement * element, GstQuery * query)
   GstStructure *s = NULL;
 
   GST_DEBUG_OBJECT (this, "query");
-
+  g_print ("MprtpScheduler->Query: %s\n", GST_QUERY_TYPE_NAME (query));
   switch (GST_QUERY_TYPE (query)) {
     case GST_QUERY_CUSTOM:
       THIS_LOCK (this);
