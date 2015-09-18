@@ -35,7 +35,7 @@ static gboolean mprtpr_subflow_is_early_discarded_packets (MPRTPRSubflow *
 static guint64 mprtpr_subflow_get_packet_skew_median (MPRTPRSubflow * this);
 static gboolean mprtpr_subflow_do_riport_now (MPRTPRSubflow * this,
     GstClockTime * next_time);
-static guint16 mprtpr_subflow_get_id (MPRTPRSubflow * this);
+static guint8 mprtpr_subflow_get_id (MPRTPRSubflow * this);
 static GList *mprtpr_subflow_get_packets (MPRTPRSubflow * this);
 static void mprtpr_subflow_add_packet_skew (MPRTPRSubflow * this,
     guint32 rtptime, guint32 clockrate);
@@ -75,7 +75,7 @@ mprtpr_subflow_class_init (MPRTPRSubflowClass * klass)
 
 
 MPRTPRSubflow *
-make_mprtpr_subflow (guint16 id, guint8 header_ext_id)
+make_mprtpr_subflow (guint8 id, guint8 header_ext_id)
 {
   MPRTPRSubflow *result;
 
@@ -227,7 +227,7 @@ mprtpr_subflow_is_early_discarded_packets (MPRTPRSubflow * this)
 }
 
 
-guint16
+guint8
 mprtpr_subflow_get_id (MPRTPRSubflow * this)
 {
   guint16 result;

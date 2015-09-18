@@ -31,7 +31,7 @@ typedef struct _MPRTPSubflowHeaderExtension MPRTPSubflowHeaderExtension;
 
 struct _MPRTPSubflowHeaderExtension
 {
-  guint16 id;
+  guint8 id;
   guint16 seq;
 };
 
@@ -64,7 +64,7 @@ struct _MPRTPSenderSubflow
   GObject object;
   GMutex mutex;
   GstClock *sysclock;
-  guint16 id;
+  guint8 id;
   //GstPad*              outpad;
 
   guint8 state;
@@ -76,7 +76,7 @@ struct _MPRTPSenderSubflow
   void (*process_rtpbuf_out) (MPRTPSSubflow *, guint, GstRTPBuffer *);
   void (*process_mprtcp_block) (MPRTPSSubflow *, GstMPRTCPSubflowBlock *);
   void (*setup_sr_riport) (MPRTPSSubflow *, GstMPRTCPSubflowRiport *);
-    guint16 (*get_id) (MPRTPSSubflow *);
+    guint8 (*get_id) (MPRTPSSubflow *);
     gfloat (*get_sending_bid) (MPRTPSSubflow *);
     gboolean (*is_active) (MPRTPSSubflow *);
     gboolean (*is_non_congested) (MPRTPSSubflow *);
@@ -192,7 +192,7 @@ struct _MPRTPSenderSubflowClass
 };
 
 GType mprtps_subflow_get_type (void);
-MPRTPSSubflow *make_mprtps_subflow (guint16 id);
+MPRTPSSubflow *make_mprtps_subflow (guint8 id);
 
 G_END_DECLS
 #endif /* MPRTPSSUBFLOW_H_ */

@@ -43,7 +43,7 @@ static void mprtps_subflow_process_rtpbuffer_out (MPRTPSSubflow * subflow,
 static void mprtps_subflow_process_mprtcp_block (MPRTPSSubflow * subflow,
     GstMPRTCPSubflowBlock * block);
 
-static guint16 mprtps_subflow_get_id (MPRTPSSubflow * this);
+static guint8 mprtps_subflow_get_id (MPRTPSSubflow * this);
 static guint32 mprtps_subflow_get_sent_packet_num (MPRTPSSubflow * this);
 static gboolean mprtps_subflow_is_active (MPRTPSSubflow * this);
 static gboolean mprtps_subflow_is_non_congested (MPRTPSSubflow * this);
@@ -113,7 +113,7 @@ mprtps_subflow_class_init (MPRTPSSubflowClass * klass)
  * Returns: a new #MPRTPSource. Use g_object_unref() after usage.
  */
 MPRTPSSubflow *
-make_mprtps_subflow (guint16 id)
+make_mprtps_subflow (guint8 id)
 {
   MPRTPSSubflow *result;
 
@@ -677,7 +677,7 @@ mprtps_subflow_setup_sr_riport (MPRTPSSubflow * this,
 
 
 
-guint16
+guint8
 mprtps_subflow_get_id (MPRTPSSubflow * this)
 {
   guint16 result;

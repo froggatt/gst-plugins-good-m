@@ -49,13 +49,14 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpplayouter_debug_category);
 
 #define MPRTP_PLAYOUTER_DEFAULT_EXTENSION_HEADER_ID 3
 #define MPRTP_PLAYOUTER_DEFAULT_SSRC 0
+#define MPRTP_PLAYOUTER_DEFAULT_CLOCKRATE 90000
 /* prototypes */
-
-typedef struct _MPRTPRSubflowHeaderExtension
-{
-  guint16 id;
-  guint16 sequence;
-} MPRTPRSubflowHeaderExtension;
+//
+//typedef struct _MPRTPRSubflowHeaderExtension
+//{
+//  guint8 id;
+//  guint16 sequence;
+//} MPRTPRSubflowHeaderExtension;
 
 static void gst_mprtpplayouter_set_property (GObject * object,
     guint property_id, const GValue * value, GParamSpec * pspec);
@@ -197,6 +198,8 @@ gst_mprtpplayouter_class_init (GstMprtpplayouterClass * klass)
           "Enable or Disable sending subflow SR riports", TRUE,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+
+
   element_class->change_state =
       GST_DEBUG_FUNCPTR (gst_mprtpplayouter_change_state);
   element_class->query = GST_DEBUG_FUNCPTR (gst_mprtpplayouter_query);
@@ -242,7 +245,7 @@ gst_mprtpplayouter_init (GstMprtpplayouter * mprtpplayouter)
 
   mprtpplayouter->ext_header_id = MPRTP_PLAYOUTER_DEFAULT_EXTENSION_HEADER_ID;
   mprtpplayouter->playout_delay = 0.0;
-  mprtpplayouter->pivot_clock_rate = 0;
+  mprtpplayouter->pivot_clock_rate = MPRTP_PLAYOUTER_DEFAULT_CLOCKRATE;
   mprtpplayouter->pivot_ssrc = MPRTP_PLAYOUTER_DEFAULT_SSRC;
   mprtpplayouter->path_skew_counter = 0;
   mprtpplayouter->ext_rtptime = -1;
@@ -298,6 +301,7 @@ gst_mprtpplayouter_set_property (GObject * object, guint property_id,
       mprtpplayouter->subflow_riports_enabled = g_value_get_boolean (value);
       THIS_UNLOCK (mprtpplayouter);
       break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -364,12 +368,27 @@ gst_mprtpplayouter_sink_event (GstPad * pad, GstObject * parent,
   GstMprtpplayouter *this = GST_MPRTPPLAYOUTER (parent);
   gboolean result;
   GstPad *peer;
+  GstCaps *caps;
+  const GstStructure *s;
+  gint clock_rate;
 
   GST_DEBUG_OBJECT (this, "sink event");
-  switch (GST_QUERY_TYPE (event)) {
-    default:
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_CAPS:
+      gst_event_parse_caps (event, &caps);
+      s = gst_caps_get_structure (caps, 0);
+      if (gst_structure_has_field (s, "clock-rate")) {
+        THIS_LOCK (this);
+        gst_structure_get_int (s, "clock-rate", &clock_rate);
+        this->pivot_clock_rate = (guint32) clock_rate;
+        THIS_UNLOCK (this);
+      }
       peer = gst_pad_get_peer (this->mprtp_srcpad);
       result = gst_pad_send_event (peer, event);
+      gst_object_unref (peer);
+      break;
+    default:
+      result = gst_pad_event_default (pad, parent, event);
       break;
   }
 
@@ -768,7 +787,7 @@ void
 _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
 {
   gpointer pointer = NULL;
-  MPRTPRSubflowHeaderExtension *subflow_infos = NULL;
+  MPRTPSubflowHeaderExtension *subflow_infos = NULL;
   MPRTPRSubflow *subflow;
   guint size;
   GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
@@ -798,7 +817,7 @@ _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
     gst_rtp_buffer_unmap (&rtp);
     return;
   }
-  subflow_infos = (MPRTPRSubflowHeaderExtension *) pointer;
+  subflow_infos = (MPRTPSubflowHeaderExtension *) pointer;
   if (_select_subflow (this, subflow_infos->id, &subflow) == FALSE) {
     subflow = make_mprtpr_subflow (subflow_infos->id, this->ext_header_id);
     this->subflows = g_list_prepend (this->subflows, subflow);
@@ -818,7 +837,7 @@ _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
     subflow->add_packet_skew (subflow, rtptime, this->pivot_clock_rate);
   }
 
-  subflow->process_mprtp_packets (subflow, buf, subflow_infos->sequence);
+  subflow->process_mprtp_packets (subflow, buf, subflow_infos->seq);
 }
 
 gboolean

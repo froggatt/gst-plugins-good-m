@@ -39,6 +39,12 @@ G_BEGIN_DECLS
 typedef struct _GstMprtpscheduler GstMprtpscheduler;
 typedef struct _GstMprtpschedulerPrivate GstMprtpschedulerPrivate;
 typedef struct _GstMprtpschedulerClass GstMprtpschedulerClass;
+typedef struct _GstMprtpschedulerSubflowRate GstMprtpschedulerSubflowRate;
+
+struct _GstMprtpschedulerSubflowRate{
+  guint8 subflow_id;
+  gfloat rate;
+};
 
 struct _GstMprtpscheduler
 {
@@ -59,7 +65,7 @@ struct _GstMprtpscheduler
   GstSegment     segment;
   guint8         ext_header_id;
   gboolean       subflow_riports_enabled;
-  gboolean       manual_sending_rates_enabled;
+  gboolean       auto_sending_rates_enabled;
   guint16        mprtcp_mtu;
   gfloat         charge_value;
   gfloat         alpha_value;
@@ -67,6 +73,7 @@ struct _GstMprtpscheduler
   gfloat         gamma_value;
   guint32        max_delay;
   GList*         subflows;
+  gboolean       has_new_manual_sending_rate;
   gboolean       no_active_subflows;
   SchTree*       schtree;
   GstTask*       scheduler;

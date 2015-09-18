@@ -110,9 +110,11 @@ enum
   PROP_EXT_HEADER_ID,
   PROP_JOIN_SUBFLOW,
   PROP_DETACH_SUBFLOW,
+  PROP_SETUP_NON_CONGESTED_SUBFLOW,
+  PROP_SETUP_CONGESTED_SUBFLOW,
   PROP_SUBFLOW_RIPORTS_ENABLED,
-  PROP_SUBFLOW_MANUAL_SENDING_RATE_ENABLED,
-  PROP_SUBFLOW_RATE,
+  PROP_AUTO_SENDING_RATE_ENABLED,
+  PROP_SET_SENDING_RATE,
 };
 
 /* pad templates */
@@ -129,7 +131,7 @@ static GstStaticPadTemplate gst_mprtpscheduler_mprtp_src_template =
 GST_STATIC_PAD_TEMPLATE ("mprtp_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("ANY")
+    GST_STATIC_CAPS ("application/x-rtp")
     );
 
 
@@ -215,6 +217,17 @@ gst_mprtpscheduler_class_init (GstMprtpschedulerClass * klass)
           "Detach a subflow with a given id.", 0,
           255, 0, G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_SETUP_CONGESTED_SUBFLOW,
+      g_param_spec_uint ("congested-subflow", "set the subflow congested",
+          "Set the subflow congested", 0,
+          255, 0, G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class,
+      PROP_SETUP_NON_CONGESTED_SUBFLOW,
+      g_param_spec_uint ("non-congested-subflow",
+          "set the subflow non-congested", "Set the subflow non-congested", 0,
+          255, 0, G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_SUBFLOW_RIPORTS_ENABLED,
       g_param_spec_boolean ("subflow-riports-enabled",
           "enable or disable the subflow riports",
@@ -222,44 +235,22 @@ gst_mprtpscheduler_class_init (GstMprtpschedulerClass * klass)
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class,
-      PROP_SUBFLOW_MANUAL_SENDING_RATE_ENABLED,
-      g_param_spec_boolean ("subflow-manual-rate-enabled",
-          "Enable or disable the subflow rate manual changes",
-          "Enable or disable the subflow rate manual changes", FALSE,
+      PROP_AUTO_SENDING_RATE_ENABLED,
+      g_param_spec_boolean ("auto-sending-rates",
+          "enable or disable automatic sending rate adaption",
+          "Enable or Disable automatic sending rate adaption", TRUE,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-  g_object_class_install_property (gobject_class, PROP_SUBFLOW_RATE,
-      g_param_spec_value_array ("subflow-rate", "Set subflow rate",
-          "Setup the sending rate for a specific subflow",
-          g_param_spec_uint ("rates", "subflow id and rate ",
-              "Filter coefficient", 0, 255, 0.0,
-              G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS),
-          G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property (gobject_class, PROP_SET_SENDING_RATE,
+      g_param_spec_object ("setup-sending-rate", "Setup sending rate on path i",
+          "The parameter must be a pointed to the following "
+          "struct:{8bit unsigned integer for subflow identification,"
+          "32 bit float precision number for defining the rate}", GST_TYPE_PAD,
+          G_PARAM_WRITABLE | GST_PARAM_MUTABLE_PLAYING |
+          G_PARAM_STATIC_STRINGS));
+
 }
 
-/*
-static gboolean
-gst_mprtpscheduler_rtp_event_handler (GstPad *pad, GstObject *parent, GstEvent * event)
-{
-
-  GstMprtpscheduler *this = GST_MPRTPSCHEDULER(parent);
-  MPRTPSSubflow *subflow;
-  GList *it;
-  gboolean result;
-  THIS_LOCK(this);
-
-
-  result = gst_pad_event_p
-  for(it = this->subflows; it != NULL; it = it->next){
-    subflow = it->data;
-    subflow->push_event(subflow, event);
-  }
-
-gst_mprtpscheduler_rtp_event_handler_done:
-  THIS_UNLOCK(this);
-  return result;
-}
-*/
 
 
 static gboolean
@@ -268,45 +259,10 @@ gst_mprtpscheduler_mprtp_src_event (GstPad * pad, GstObject * parent,
 {
   GstMprtpscheduler *this;
   gboolean result;
-//  const GstStructure *s;
-
-//  GList *it;
-//  MPRTPSSubflow *subflow;
-//  guint subflow_id, event_value;
 
   this = GST_MPRTPSCHEDULER (parent);
   THIS_LOCK (this);
   switch (GST_EVENT_TYPE (event)) {
-//    case GST_EVENT_CUSTOM_UPSTREAM:
-//      result = TRUE;
-//      s = gst_event_get_structure (event);
-//      if (!s || !gst_structure_has_name(s, "GstMpRtpSubflowEvent")){
-//        break;
-//      }
-//      gst_structure_get_uint(s, "event", &event_value);
-//        gst_structure_get_uint(s, "subflow_id", &subflow_id);
-//        if(event_value == MPRTP_SENDER_SUBFLOW_EVENT_JOINED){
-//          subflow = make_mprtps_subflow(subflow_id);
-//          this->subflows = g_list_prepend(this->subflows, subflow);
-//              subflow->set_event(subflow, MPRTP_SENDER_SUBFLOW_EVENT_JOINED);
-//
-//              break;
-//        }
-//
-//        for(subflow = NULL, it = this->subflows; it != NULL; it = it->next){
-//          subflow = it->data;
-//              if(subflow->get_id(subflow) == subflow_id){
-//                break;
-//              }
-//              subflow = NULL;
-//      }
-//      if(subflow == NULL){
-//        break;
-//      }
-//      if(event_value == MPRTP_SENDER_SUBFLOW_EVENT_DETACHED){
-//        subflow->set_event(subflow, MPRTP_SENDER_SUBFLOW_EVENT_DETACHED);
-//      }
-//      break;
     default:
       result = gst_pad_event_default (pad, parent, event);
   }
@@ -408,8 +364,8 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
   mprtpscheduler->flowable = FALSE;
   mprtpscheduler->subflows = NULL;
   mprtpscheduler->subflow_riports_enabled = TRUE;
-  mprtpscheduler->manual_sending_rates_enabled = FALSE;
-
+  mprtpscheduler->auto_sending_rates_enabled = FALSE;
+  mprtpscheduler->has_new_manual_sending_rate = FALSE;
   schtree->setup_bid_values (schtree, 0.675);
 /*
   mprtpscheduler->subflows = g_list_prepend(mprtpscheduler->subflows,
@@ -426,6 +382,10 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
     const GValue * value, GParamSpec * pspec)
 {
   GstMprtpscheduler *mprtpscheduler = GST_MPRTPSCHEDULER (object);
+  GstMprtpschedulerSubflowRate *source;
+  MPRTPSSubflow *subflow;
+  guint guint_value;
+  GList *it;
   GST_DEBUG_OBJECT (mprtpscheduler, "set_property");
 
   switch (property_id) {
@@ -469,10 +429,25 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
       _detach_subflow (mprtpscheduler, g_value_get_uint (value));
       THIS_UNLOCK (mprtpscheduler);
       break;
-    case PROP_SUBFLOW_MANUAL_SENDING_RATE_ENABLED:
+    case PROP_SETUP_CONGESTED_SUBFLOW:
+    case PROP_SETUP_NON_CONGESTED_SUBFLOW:
       THIS_LOCK (mprtpscheduler);
-      mprtpscheduler->manual_sending_rates_enabled =
-          g_value_get_boolean (value);
+      guint_value = g_value_get_uint (value);
+      for (it = mprtpscheduler->subflows; it != NULL; it = it->next) {
+        subflow = it->data;
+        if (subflow->get_id (subflow) == (guint16) guint_value) {
+          break;
+        }
+        subflow = NULL;
+      }
+      if (subflow == NULL) {
+        break;
+      }
+      if (property_id == PROP_SETUP_CONGESTED_SUBFLOW) {
+        subflow->set_congested (subflow);
+      } else {
+        subflow->set_non_congested (subflow);
+      }
       THIS_UNLOCK (mprtpscheduler);
       break;
     case PROP_SUBFLOW_RIPORTS_ENABLED:
@@ -480,9 +455,27 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
       mprtpscheduler->subflow_riports_enabled = g_value_get_boolean (value);
       THIS_UNLOCK (mprtpscheduler);
       break;
-    case PROP_SUBFLOW_RATE:
+    case PROP_SET_SENDING_RATE:
       THIS_LOCK (mprtpscheduler);
-
+      source = g_value_get_object (value);
+      for (it = mprtpscheduler->subflows; it != NULL; it = it->next) {
+        subflow = it->data;
+        if (subflow->get_id (subflow) == (guint16) source->subflow_id) {
+          break;
+        }
+        subflow = NULL;
+      }
+      if (subflow == NULL) {
+        break;
+      }
+      mprtpscheduler->schtree->setup_sending_rate (mprtpscheduler->schtree,
+          subflow, source->rate);
+      mprtpscheduler->has_new_manual_sending_rate = TRUE;
+      THIS_UNLOCK (mprtpscheduler);
+      break;
+    case PROP_AUTO_SENDING_RATE_ENABLED:
+      THIS_LOCK (mprtpscheduler);
+      mprtpscheduler->auto_sending_rates_enabled = g_value_get_boolean (value);
       THIS_UNLOCK (mprtpscheduler);
       break;
     default:
@@ -533,11 +526,6 @@ gst_mprtpscheduler_get_property (GObject * object, guint property_id,
     case PROP_SUBFLOW_RIPORTS_ENABLED:
       THIS_LOCK (mprtpscheduler);
       g_value_set_boolean (value, mprtpscheduler->subflow_riports_enabled);
-      THIS_UNLOCK (mprtpscheduler);
-      break;
-    case PROP_SUBFLOW_MANUAL_SENDING_RATE_ENABLED:
-      THIS_LOCK (mprtpscheduler);
-      g_value_set_boolean (value, mprtpscheduler->manual_sending_rates_enabled);
       THIS_UNLOCK (mprtpscheduler);
       break;
     default:
@@ -908,75 +896,57 @@ _set_charge_value (GstMprtpscheduler * this, gfloat * charge_value)
   //g_print("charge_value: %f\n", charge_value);
 }
 
+//
+//static void
+//_print_event (const char *text, guint16 id, MPRTPSubflowEvent event)
+//{
+//  char result[255];
+//  switch (event) {
+//    case MPRTP_SENDER_SUBFLOW_EVENT_BID:
+//      sprintf (result, "BID");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_CONGESTION:
+//      sprintf (result, "CONGESTION");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_DISTORTION:
+//      sprintf (result, "DISTORTION");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_KEEP:
+//      sprintf (result, "KEEP");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_LATE:
+//      sprintf (result, "LATE");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_LOSTS:
+//      sprintf (result, "LOSTS");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_REFRESH:
+//      sprintf (result, "REFRESH");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
+//      sprintf (result, "SETTLED");
+//      break;
+//    case MPRTP_SENDER_SUBFLOW_EVENT_SETTLEMENT:
+//      sprintf (result, "SETTLEMENT");
+//      break;
+//  }
+//  if (event != MPRTP_SENDER_SUBFLOW_EVENT_KEEP) {
+//    g_print ("%s (%d): %s\n", text, id, result);
+//  }
+//}
+
 static void
-_print_event (const char *text, guint16 id, MPRTPSubflowEvent event)
+_manual_sending_rate (GstMprtpscheduler * this,
+    GstClockTime now,
+    SchTree * schtree,
+    gboolean * has_active_subflow, gboolean * commit_schtree_changes)
 {
-  char result[255];
-  switch (event) {
-    case MPRTP_SENDER_SUBFLOW_EVENT_BID:
-      sprintf (result, "BID");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_CONGESTION:
-      sprintf (result, "CONGESTION");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_DISTORTION:
-      sprintf (result, "DISTORTION");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_KEEP:
-      sprintf (result, "KEEP");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_LATE:
-      sprintf (result, "LATE");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_LOSTS:
-      sprintf (result, "LOSTS");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_REFRESH:
-      sprintf (result, "REFRESH");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
-      sprintf (result, "SETTLED");
-      break;
-    case MPRTP_SENDER_SUBFLOW_EVENT_SETTLEMENT:
-      sprintf (result, "SETTLEMENT");
-      break;
-  }
-  if (event != MPRTP_SENDER_SUBFLOW_EVENT_KEEP) {
-    g_print ("%s (%d): %s\n", text, id, result);
-  }
-}
-
-void
-gst_mprtp_sender_scheduler_run (void *data)
-{
-  GstMprtpscheduler *this = (GstMprtpscheduler *) data;
-  SchTree *schtree = this->schtree;
-  GstClockTime now;
-  GstClockID clock_id;
-  GstClockTime next_scheduler_time;
   GList *it;
-  gfloat subflow_sending_bid;
-  guint16 subflow_id;
-  gfloat charge_value;
   MPRTPSSubflow *subflow;
-  MPRTPSubflowEvent subflow_event;
-  gboolean has_active_subflow, had_active_subflows;
-  gboolean commit_schtree_changes = FALSE;
-  gdouble rand;
-  GstEvent *event = NULL;
-  MPRTPSubflowFlags state_before, state_after;
-  gboolean subflow_is_active;
-  guint non_congested_non_lossy_subflow_num = 0;
-  guint active_subflow_num = 0;
-  GstClock *sysclock;
+  gfloat charge_value = 0.0;
 
-  has_active_subflow = FALSE;
-  GST_DEBUG_OBJECT (this, "Scheduler task is started");
-  THIS_LOCK (this);
-  had_active_subflows = !this->no_active_subflows;
   for (it = this->subflows; it != NULL; it = it->next) {
     subflow = it->data;
-    //check existance
     if (subflow->is_new (subflow)) {
       _set_charge_value (this, &charge_value);
       subflow->set_active (subflow);
@@ -984,168 +954,80 @@ gst_mprtp_sender_scheduler_run (void *data)
       subflow->set_non_lossy (subflow);
       schtree->setup_sending_rate (schtree, subflow, charge_value);
       subflow->set_joined (subflow);
-      has_active_subflow = TRUE;
-      commit_schtree_changes = TRUE;
+      *has_active_subflow = TRUE;
+      *commit_schtree_changes = TRUE;
       continue;
     }
     if (subflow->is_detached (subflow)) {
       schtree->delete_path (schtree, subflow);
-      commit_schtree_changes = TRUE;
+      *commit_schtree_changes = TRUE;
       _delete_subflow (this, subflow);
       continue;
     }
-    if (this->manual_sending_rates_enabled) {
-      continue;
-    }
-    subflow_id = subflow->get_id (subflow);
-    //check latency
-    state_before = subflow->get_state (subflow);
-    subflow_event = subflow->check_latency (subflow);
-    _print_event ("subflow->check_latency", subflow_id, subflow_event);
-    switch (subflow_event) {
-      case MPRTP_SENDER_SUBFLOW_EVENT_LATE:
-        subflow->set_passive (subflow);
-        subflow_sending_bid = 0.0;
-        commit_schtree_changes = TRUE;
-        goto setup_subflow_sending_rate;
-        break;
-      case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
-        subflow->set_active (subflow);
-        if (!subflow->try_reload_from_passive (subflow, &subflow_sending_bid)) {
-          _set_charge_value (this, &charge_value);
-          subflow_sending_bid = charge_value;
-        }
-        commit_schtree_changes = TRUE;
-        goto setup_subflow_sending_rate;
-        break;
-      default:
-        break;
-    }
-
-    //check congestion
-    subflow_event = subflow->check_congestion (subflow);
-    _print_event ("subflow->check_congestion", subflow_id, subflow_event);
-    switch (subflow_event) {
-      case MPRTP_SENDER_SUBFLOW_EVENT_CONGESTION:
-        subflow->set_congested (subflow);
-        subflow_sending_bid =
-            subflow->get_sending_bid (subflow) * this->beta_value;
-        commit_schtree_changes = TRUE;
-        goto setup_subflow_sending_rate;
-        break;
-      case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
-        subflow->set_non_congested (subflow);
-        if (!subflow->try_reload_from_congested (subflow, &subflow_sending_bid)) {
-          _set_charge_value (this, &charge_value);
-          subflow_sending_bid = charge_value;
-        }
-        commit_schtree_changes = TRUE;
-        goto setup_subflow_sending_rate;
-        break;
-//        case MPRTP_SENDER_SUBFLOW_EVENT_DISTORTION:
-//                subflow_sending_bid = subflow->get_goodput(subflow) *
-//                                      (1.0 - this->alpha_value);
-//                //this->consecutive_non_distortions = 0;
-//                commit_schtree_changes = TRUE;
-//                goto setup_subflow_sending_rate;
-//        break;
-      default:
-        //++this->consecutive_non_distortions;
-        break;
-    }
-
-    //check lossy
-    subflow_event = subflow->check_lossy (subflow);
-    _print_event ("subflow->check_lossy", subflow_id, subflow_event);
-    switch (subflow_event) {
-      case MPRTP_SENDER_SUBFLOW_EVENT_LOSTS:
-        subflow->set_lossy (subflow);
-        schtree->setup_sending_rate (schtree, subflow, subflow_sending_bid);
-        commit_schtree_changes = TRUE;
-        goto setup_subflow_sending_rate;
-        break;
-      case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
-        subflow->set_non_lossy (subflow);
-        if (!subflow->try_reload_from_lossy (subflow, &subflow_sending_bid)) {
-          subflow_sending_bid = subflow->get_sending_bid (subflow);
-        }
-        commit_schtree_changes = TRUE;
-        goto setup_subflow_sending_rate;
-        break;
-      default:
-        break;
-    }
-
-//      subflow_event = subflow->check_monotocity(subflow);
-//      switch(subflow_event)
-//      {
-//        case MPRTP_SENDER_SUBFLOW_EVENT_REFRESH:
-//                commit_schtree_changes = TRUE;
-//        break;
-//        default:
-//        break;
-//      }
-
-    subflow_sending_bid = subflow->get_sending_bid (subflow);
-
-  setup_subflow_sending_rate:
-    subflow_is_active = subflow->is_active (subflow);
-//      subflow_is_non_congested = !subflow->is_non_congested(subflow);
-//      subflow_is_non_lossy = !subflow->is_non_lossy(subflow);
-    if (subflow_is_active) {
-//        if(subflow_is_non_congested && subflow_is_non_lossy){
-//              ++non_congested_non_lossy_subflow_num;
-//        }else if(subflow_is_non_congested){
-//              ++lossy_subflow_num;
-//        }else{
-//              ++congested_subflow_num;
-//        }
-//        ++active_subflow_num;
-      has_active_subflow = TRUE;
-    }
-    state_after = subflow->get_state (subflow);
-    schtree->setup_sending_rate (schtree, subflow, subflow_sending_bid);
-
-//    g_print("subflow %d is active: %d; non-congested: %d; non-lossy: %d\n",
-//              subflow->get_id(subflow), subflow->is_active(subflow),
-//                      subflow->is_non_congested(subflow), subflow->is_non_lossy(subflow));
-    if (state_before != state_after) {
-      event = gst_event_new_custom (GST_EVENT_CUSTOM_DOWNSTREAM,
-          gst_structure_new ("GstMpRtpSubflowState",
-              "subflow_id", G_TYPE_UINT, subflow->get_id (subflow),
-              "state", G_TYPE_UINT, state_after, NULL));
-      gst_pad_push_event (this->mprtp_srcpad, event);
+    if (subflow->is_active (subflow)) {
+      *has_active_subflow = TRUE;
     }
   }
+  if (this->has_new_manual_sending_rate) {
+    *commit_schtree_changes = TRUE;
+    this->has_new_manual_sending_rate = FALSE;
+  }
 
-  if (non_congested_non_lossy_subflow_num < active_subflow_num) {
-    //increasing decreasing ratio!;
-  }
-  sysclock = gst_system_clock_obtain ();
-  now = gst_clock_get_time (sysclock);
-  if (this->last_schtree_commit < now - 60 * GST_SECOND) {
-    commit_schtree_changes = TRUE;
-  }
   for (it = this->subflows; it != NULL; it = it->next) {
     subflow = it->data;
     g_print ("%lu,%p,subflow %d,%d\n", now, this, subflow->get_id (subflow),
         subflow->get_sent_packet_num (subflow));
   }
 
+}
+
+static void
+_automatic_sending_rate (GstMprtpscheduler * this,
+    GstClockTime now,
+    SchTree * schtree,
+    gboolean * has_active_subflows, gboolean * commit_schtree_changes)
+{
+  GST_ERROR_OBJECT (this, "This function has not been implemented yet");
+}
+
+
+void
+gst_mprtp_sender_scheduler_run (void *data)
+{
+  GstMprtpscheduler *this = (GstMprtpscheduler *) data;
+  GstClockTime now;
+  GstClockID clock_id;
+  GstClockTime next_scheduler_time;
+  GstClock *sysclock;
+  SchTree *schtree;
+  gboolean had_active_subflows;
+  gboolean has_active_subflow;
+  gboolean commit_schtree_changes = FALSE;
+  gdouble rand;
+
+  THIS_LOCK (this);
+  schtree = this->schtree;
+  had_active_subflows = !this->no_active_subflows;
+  sysclock = gst_system_clock_obtain ();
+  now = gst_clock_get_time (sysclock);
+  if (this->auto_sending_rates_enabled) {
+    _automatic_sending_rate (this, now, schtree, &has_active_subflow,
+        &commit_schtree_changes);
+  } else {
+    _manual_sending_rate (this, now, schtree, &has_active_subflow,
+        &commit_schtree_changes);
+  }
+  now = gst_clock_get_time (sysclock);
+  this->scheduler_last_run = now;
   if (commit_schtree_changes) {
     schtree->commit_changes (schtree);
     this->last_schtree_commit = now;
   }
 
   this->no_active_subflows = !has_active_subflow;
-//
-//  g_print("this->no_active_subflows: %d had_active_subflows: %d has_active_subflows: %d\n",
-//                this->no_active_subflows, had_active_subflows, has_active_subflow);
-  if (this->no_active_subflows == FALSE && had_active_subflows == FALSE) {
+  if (has_active_subflow == TRUE && had_active_subflows == FALSE) {
     g_cond_signal (&this->scheduler_cond);
   }
-
-  this->scheduler_last_run = now;
 
   rand = g_random_double ();
   next_scheduler_time = now + GST_SECOND * (0.5 + rand);
@@ -1160,8 +1042,225 @@ gst_mprtp_sender_scheduler_run (void *data)
   }
   g_object_unref (sysclock);
   gst_clock_id_unref (clock_id);
-
 }
+
+//
+//void
+//gst_mprtp_sender_scheduler_run (void *data)
+//{
+//  GstMprtpscheduler *this = (GstMprtpscheduler *) data;
+//  SchTree *schtree = this->schtree;
+//  GstClockTime now;
+//  GstClockID clock_id;
+//  GstClockTime next_scheduler_time;
+//  GList *it;
+//  gfloat subflow_sending_bid;
+//  guint16 subflow_id;
+//  gfloat charge_value;
+//  MPRTPSSubflow *subflow;
+//  MPRTPSubflowEvent subflow_event;
+//  gboolean has_active_subflow, had_active_subflows;
+//  gboolean commit_schtree_changes = FALSE;
+//  gdouble rand;
+//  GstEvent *event = NULL;
+//  MPRTPSubflowFlags state_before, state_after;
+//  gboolean subflow_is_active;
+//  guint non_congested_non_lossy_subflow_num = 0;
+//  guint active_subflow_num = 0;
+//  GstClock *sysclock;
+//
+//  has_active_subflow = FALSE;
+//  GST_DEBUG_OBJECT (this, "Scheduler task is started");
+//  THIS_LOCK (this);
+//  had_active_subflows = !this->no_active_subflows;
+//  for (it = this->subflows; it != NULL; it = it->next) {
+//    subflow = it->data;
+//    //check existance
+//    if (subflow->is_new (subflow)) {
+//      _set_charge_value (this, &charge_value);
+//      subflow->set_active (subflow);
+//      subflow->set_non_congested (subflow);
+//      subflow->set_non_lossy (subflow);
+//      schtree->setup_sending_rate (schtree, subflow, charge_value);
+//      subflow->set_joined (subflow);
+//      has_active_subflow = TRUE;
+//      commit_schtree_changes = TRUE;
+//      continue;
+//    }
+//    if (subflow->is_detached (subflow)) {
+//      schtree->delete_path (schtree, subflow);
+//      commit_schtree_changes = TRUE;
+//      _delete_subflow (this, subflow);
+//      continue;
+//    }
+//    if (this->manual_sending_rates_enabled) {
+//      continue;
+//    }
+//    subflow_id = subflow->get_id (subflow);
+//    //check latency
+//    state_before = subflow->get_state (subflow);
+//    subflow_event = subflow->check_latency (subflow);
+//    _print_event ("subflow->check_latency", subflow_id, subflow_event);
+//    switch (subflow_event) {
+//      case MPRTP_SENDER_SUBFLOW_EVENT_LATE:
+//        subflow->set_passive (subflow);
+//        subflow_sending_bid = 0.0;
+//        commit_schtree_changes = TRUE;
+//        goto setup_subflow_sending_rate;
+//        break;
+//      case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
+//        subflow->set_active (subflow);
+//        if (!subflow->try_reload_from_passive (subflow, &subflow_sending_bid)) {
+//          _set_charge_value (this, &charge_value);
+//          subflow_sending_bid = charge_value;
+//        }
+//        commit_schtree_changes = TRUE;
+//        goto setup_subflow_sending_rate;
+//        break;
+//      default:
+//        break;
+//    }
+//
+//    //check congestion
+//    subflow_event = subflow->check_congestion (subflow);
+//    _print_event ("subflow->check_congestion", subflow_id, subflow_event);
+//    switch (subflow_event) {
+//      case MPRTP_SENDER_SUBFLOW_EVENT_CONGESTION:
+//        subflow->set_congested (subflow);
+//        subflow_sending_bid =
+//            subflow->get_sending_bid (subflow) * this->beta_value;
+//        commit_schtree_changes = TRUE;
+//        goto setup_subflow_sending_rate;
+//        break;
+//      case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
+//        subflow->set_non_congested (subflow);
+//        if (!subflow->try_reload_from_congested (subflow, &subflow_sending_bid)) {
+//          _set_charge_value (this, &charge_value);
+//          subflow_sending_bid = charge_value;
+//        }
+//        commit_schtree_changes = TRUE;
+//        goto setup_subflow_sending_rate;
+//        break;
+////        case MPRTP_SENDER_SUBFLOW_EVENT_DISTORTION:
+////                subflow_sending_bid = subflow->get_goodput(subflow) *
+////                                      (1.0 - this->alpha_value);
+////                //this->consecutive_non_distortions = 0;
+////                commit_schtree_changes = TRUE;
+////                goto setup_subflow_sending_rate;
+////        break;
+//      default:
+//        //++this->consecutive_non_distortions;
+//        break;
+//    }
+//
+//    //check lossy
+//    subflow_event = subflow->check_lossy (subflow);
+//    _print_event ("subflow->check_lossy", subflow_id, subflow_event);
+//    switch (subflow_event) {
+//      case MPRTP_SENDER_SUBFLOW_EVENT_LOSTS:
+//        subflow->set_lossy (subflow);
+//        schtree->setup_sending_rate (schtree, subflow, subflow_sending_bid);
+//        commit_schtree_changes = TRUE;
+//        goto setup_subflow_sending_rate;
+//        break;
+//      case MPRTP_SENDER_SUBFLOW_EVENT_SETTLED:
+//        subflow->set_non_lossy (subflow);
+//        if (!subflow->try_reload_from_lossy (subflow, &subflow_sending_bid)) {
+//          subflow_sending_bid = subflow->get_sending_bid (subflow);
+//        }
+//        commit_schtree_changes = TRUE;
+//        goto setup_subflow_sending_rate;
+//        break;
+//      default:
+//        break;
+//    }
+//
+////      subflow_event = subflow->check_monotocity(subflow);
+////      switch(subflow_event)
+////      {
+////        case MPRTP_SENDER_SUBFLOW_EVENT_REFRESH:
+////                commit_schtree_changes = TRUE;
+////        break;
+////        default:
+////        break;
+////      }
+//
+//    subflow_sending_bid = subflow->get_sending_bid (subflow);
+//
+//  setup_subflow_sending_rate:
+//    subflow_is_active = subflow->is_active (subflow);
+////      subflow_is_non_congested = !subflow->is_non_congested(subflow);
+////      subflow_is_non_lossy = !subflow->is_non_lossy(subflow);
+//    if (subflow_is_active) {
+////        if(subflow_is_non_congested && subflow_is_non_lossy){
+////              ++non_congested_non_lossy_subflow_num;
+////        }else if(subflow_is_non_congested){
+////              ++lossy_subflow_num;
+////        }else{
+////              ++congested_subflow_num;
+////        }
+////        ++active_subflow_num;
+//      has_active_subflow = TRUE;
+//    }
+//    state_after = subflow->get_state (subflow);
+//    schtree->setup_sending_rate (schtree, subflow, subflow_sending_bid);
+//
+////    g_print("subflow %d is active: %d; non-congested: %d; non-lossy: %d\n",
+////              subflow->get_id(subflow), subflow->is_active(subflow),
+////                      subflow->is_non_congested(subflow), subflow->is_non_lossy(subflow));
+//    if (state_before != state_after) {
+//      event = gst_event_new_custom (GST_EVENT_CUSTOM_DOWNSTREAM,
+//          gst_structure_new ("GstMpRtpSubflowState",
+//              "subflow_id", G_TYPE_UINT, subflow->get_id (subflow),
+//              "state", G_TYPE_UINT, state_after, NULL));
+//      gst_pad_push_event (this->mprtp_srcpad, event);
+//    }
+//  }
+//
+//  if (non_congested_non_lossy_subflow_num < active_subflow_num) {
+//    //increasing decreasing ratio!;
+//  }
+//  sysclock = gst_system_clock_obtain ();
+//  now = gst_clock_get_time (sysclock);
+//  if (this->last_schtree_commit < now - 60 * GST_SECOND) {
+//    commit_schtree_changes = TRUE;
+//  }
+//  for (it = this->subflows; it != NULL; it = it->next) {
+//    subflow = it->data;
+//    g_print ("%lu,%p,subflow %d,%d\n", now, this, subflow->get_id (subflow),
+//        subflow->get_sent_packet_num (subflow));
+//  }
+//
+//  if (commit_schtree_changes) {
+//    schtree->commit_changes (schtree);
+//    this->last_schtree_commit = now;
+//  }
+//
+//  this->no_active_subflows = !has_active_subflow;
+////
+////  g_print("this->no_active_subflows: %d had_active_subflows: %d has_active_subflows: %d\n",
+////                this->no_active_subflows, had_active_subflows, has_active_subflow);
+//  if (this->no_active_subflows == FALSE && had_active_subflows == FALSE) {
+//    g_cond_signal (&this->scheduler_cond);
+//  }
+//
+//  this->scheduler_last_run = now;
+//
+//  rand = g_random_double ();
+//  next_scheduler_time = now + GST_SECOND * (0.5 + rand);
+//  GST_DEBUG_OBJECT (this, "Next scheduling interval time is %lu",
+//      next_scheduler_time);
+//  clock_id = gst_clock_new_single_shot_id (sysclock, next_scheduler_time);
+//
+//  THIS_UNLOCK (this);
+//
+//  if (gst_clock_id_wait (clock_id, NULL) == GST_CLOCK_UNSCHEDULED) {
+//    GST_WARNING_OBJECT (this, "The scheduler clock wait is interrupted");
+//  }
+//  g_object_unref (sysclock);
+//  gst_clock_id_unref (clock_id);
+//
+//}
 
 
 

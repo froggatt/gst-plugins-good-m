@@ -29,7 +29,7 @@ typedef struct _MPRTPReceiverSubflowClass MPRTPRSubflowClass;
 struct _MPRTPReceiverSubflow
 {
   GObject object;
-  guint16 id;
+  guint8 id;
   GList *gaps;
   GList *result;
   guint16 received_since_cycle_is_increased;
@@ -98,7 +98,7 @@ struct _MPRTPReceiverSubflow
   void (*add_packet_skew) (MPRTPRSubflow *, guint32, guint32);
   GList *(*get_packets) (MPRTPRSubflow *);
   void (*setup_sr_riport) (MPRTPRSubflow *, GstMPRTCPSubflowRiport *);
-    guint16 (*get_id) (MPRTPRSubflow *);
+    guint8 (*get_id) (MPRTPRSubflow *);
     gboolean (*do_riport_now) (MPRTPRSubflow *, GstClockTime *);
   void (*set_avg_rtcp_size) (MPRTPRSubflow *, gsize);
   void (*setup_rr_riport) (MPRTPRSubflow *, GstMPRTCPSubflowRiport *);
@@ -114,7 +114,7 @@ struct _MPRTPReceiverSubflowClass
 
 
 GType mprtpr_subflow_get_type (void);
-MPRTPRSubflow *make_mprtpr_subflow (guint16 id, guint8 header_ext_id);
+MPRTPRSubflow *make_mprtpr_subflow (guint8 id, guint8 header_ext_id);
 
 G_END_DECLS
 #endif /* MPRTPRSUBFLOW_H_ */
