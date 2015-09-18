@@ -301,18 +301,59 @@ _detach_subflow (GstMprtpscheduler * this, guint subflow_id)
 
 }
 
-static void
-gst_mprtpscheduler_rtp_sink_setcaps (GstPad * pad, GstCaps * caps)
-{
-  g_print ("gst_mprtpscheduler_rtp_sink_setcaps\n");
-}
 
 static GstCaps *
-gst_mprtpscheduler_rtp_sink_getcaps (GstPad * pad)
+gst_mprtp_sink_getcaps (GstPad * pad)
 {
-  g_print ("gst_mprtpscheduler_rtp_sink_getcaps\n");
-  return NULL;
+  GstMprtpscheduler *this;
+  GstPad *otherpad;
+  GstCaps *result, *caps;
+  const GstCaps *tcaps;
+
+  this = GST_MPRTPSCHEDULER (gst_pad_get_parent (pad));
+  /* we want to proxy properties from the
+     other end of the element */
+  otherpad =
+      (pad == this->mprtp_srcpad) ? this->rtp_sinkpad : this->mprtp_srcpad;
+
+  /* get template caps, we always need this to fiter the peer caps */
+  tcaps = gst_pad_get_pad_template_caps (otherpad);
+
+  /* get any constraints on the peer pad */
+  caps = gst_pad_peer_get_caps (otherpad);
+
+  if (caps == NULL)
+    caps = gst_caps_copy (tcaps);
+  else
+    caps = gst_caps_make_writable (caps);
+
+  /* intersect with the template */
+  result = gst_caps_intersect (caps, tcaps);
+  gst_caps_unref (caps);
+
+  gst_object_unref (this);
+
+  return result;
 }
+
+static gboolean
+gst_mprtp_sink_setcaps (GstPad * pad, GstCaps * caps)
+{
+  GstMprtpscheduler *this;
+  gboolean ret;
+  GstCaps *srccaps;
+
+  this = GST_MPRTPSCHEDULER (gst_pad_get_parent (pad));
+  srccaps = gst_caps_copy (caps);
+
+  ret = gst_pad_set_caps (this->mprtp_srcpad, srccaps);
+  gst_caps_unref (srccaps);
+
+  gst_object_unref (this);
+
+  return ret;
+}
+
 
 static void
 gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
@@ -328,6 +369,10 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
   gst_pad_set_chain_list_function (mprtpscheduler->rtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_rtp_sink_chainlist));
 
+  gst_pad_set_getcaps_function (mprtpscheduler->rtp_sinkpad,
+      gst_mprtp_sink_getcaps);
+  gst_pad_set_setcaps_function (mprtpscheduler->rtp_sinkpad,
+      gst_mprtp_sink_setcaps);
 
   gst_element_add_pad (GST_ELEMENT (mprtpscheduler),
       mprtpscheduler->rtp_sinkpad);
@@ -355,6 +400,7 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
   mprtpscheduler->mprtp_srcpad =
       gst_pad_new_from_static_template (&gst_mprtpscheduler_mprtp_src_template,
       "mprtp_src");
+
   gst_pad_set_event_function (mprtpscheduler->mprtp_srcpad,
       GST_DEBUG_FUNCPTR (gst_mprtpscheduler_mprtp_src_event));
   gst_pad_use_fixed_caps (mprtpscheduler->mprtp_srcpad);

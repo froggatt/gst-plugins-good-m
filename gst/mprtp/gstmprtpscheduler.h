@@ -93,7 +93,8 @@ struct _GstMprtpschedulerClass
   GstElementClass base_class;
 };
 
-GType gst_mprtpscheduler_get_type (void);
+GType gst_mprtpscheduler_get_type(void);
+
 
 G_END_DECLS
 
