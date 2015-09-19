@@ -43,13 +43,9 @@ struct _GstMprtpsender
   GList*         iterator;
   GstPad*        mprtcp_rr_sinkpad;
   GstPad*        mprtp_sinkpad;
-  GstPad*        rtcp_srcpad;
   GstPad*        mprtcp_sr_sinkpad;
-  GstPad*        rtcp_sinkpad;
+  GstPad*        pivot_outpad;
 
-  //GQueue        *events;
-  //GstTask       *eventing;
-  //GRecMutex      eventing_mutex;
   GstMprtpsenderPrivate* priv;
 };
 

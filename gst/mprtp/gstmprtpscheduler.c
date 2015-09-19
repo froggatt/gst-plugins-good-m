@@ -59,8 +59,6 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpscheduler_debug_category);
 #define MPRTP_SENDER_DEFAULT_ALPHA_VALUE 0.5
 #define MPRTP_SENDER_DEFAULT_BETA_VALUE 0.1
 #define MPRTP_SENDER_DEFAULT_GAMMA_VALUE 0.2
-#define MPRTP_SENDER_DEFAULT_EXTENSION_HEADER_ID 3
-#define MPRTP_SENDER_DEFAULT_MPRTCP_MTU 1400
 
 
 static void gst_mprtpscheduler_set_property (GObject * object,
@@ -366,8 +364,8 @@ gst_mprtpscheduler_init (GstMprtpscheduler * mprtpscheduler)
   mprtpscheduler->scheduler_last_run = 0;
   mprtpscheduler->no_active_subflows = TRUE;
   mprtpscheduler->scheduler_state = 0;
-  mprtpscheduler->mprtcp_mtu = MPRTP_SENDER_DEFAULT_MPRTCP_MTU;
-  mprtpscheduler->ext_header_id = MPRTP_SENDER_DEFAULT_EXTENSION_HEADER_ID;
+  mprtpscheduler->mprtcp_mtu = MPRTCP_PACKET_DEFAULT_MTU;
+  mprtpscheduler->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   mprtpscheduler->ssrc = g_random_int ();
   mprtpscheduler->flowable = FALSE;
   mprtpscheduler->subflows = NULL;
@@ -1373,6 +1371,4 @@ _delete_subflow (GstMprtpscheduler * this, MPRTPSSubflow * subflow)
 #undef MPRTP_SENDER_DEFAULT_ALPHA_VALUE
 #undef MPRTP_SENDER_DEFAULT_BETA_VALUE
 #undef MPRTP_SENDER_DEFAULT_GAMMA_VALUE
-#undef MPRTP_SENDER_DEFAULT_EXTENSION_HEADER_ID
-#undef MPRTP_SENDER_DEFAULT_MPRTCP_MTU
 #undef PACKET_IS_RTP

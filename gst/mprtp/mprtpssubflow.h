@@ -28,6 +28,7 @@ typedef struct _MPRTPSubflowHeaderExtension MPRTPSubflowHeaderExtension;
 #define MPRTPS_SUBFLOW_RRBLOCK_MAX 10
 #define MPRTPS_SUBFLOW_XR7243BLOCK_MAX 5
 #define MPRTPS_SUBFLOW_PAYLOAD_BYTES_ARRAY_LENGTH 32768
+#define MPRTP_DEFAULT_EXTENSION_HEADER_ID 3
 
 struct _MPRTPSubflowHeaderExtension
 {

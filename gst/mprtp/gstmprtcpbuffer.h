@@ -56,6 +56,7 @@
 #include <gst/gst.h>
 #include <gst/rtp/gstrtcpbuffer.h>
 
+#define MPRTCP_PACKET_DEFAULT_MTU 1400
 #define MPRTCP_PACKET_TYPE_IDENTIFIER 212
 #define GST_RTCP_TYPE_XR 207
 #define GST_MPRTCP_BLOCK_TYPE_SUBFLOW_INFO 0

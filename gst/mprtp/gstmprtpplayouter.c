@@ -47,7 +47,6 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpplayouter_debug_category);
 #define THIS_LOCK(mprtpr_ptr) g_mutex_lock(&mprtpr_ptr->mutex)
 #define THIS_UNLOCK(mprtpr_ptr) g_mutex_unlock(&mprtpr_ptr->mutex)
 
-#define MPRTP_PLAYOUTER_DEFAULT_EXTENSION_HEADER_ID 3
 #define MPRTP_PLAYOUTER_DEFAULT_SSRC 0
 #define MPRTP_PLAYOUTER_DEFAULT_CLOCKRATE 90000
 /* prototypes */
@@ -243,7 +242,7 @@ gst_mprtpplayouter_init (GstMprtpplayouter * mprtpplayouter)
   gst_pad_set_event_function (mprtpplayouter->mprtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpplayouter_sink_event));
 
-  mprtpplayouter->ext_header_id = MPRTP_PLAYOUTER_DEFAULT_EXTENSION_HEADER_ID;
+  mprtpplayouter->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   mprtpplayouter->playout_delay = 0.0;
   mprtpplayouter->pivot_clock_rate = MPRTP_PLAYOUTER_DEFAULT_CLOCKRATE;
   mprtpplayouter->pivot_ssrc = MPRTP_PLAYOUTER_DEFAULT_SSRC;
@@ -624,7 +623,7 @@ gst_mprtpplayouter_mprtcp_riporter_run (void *data)
     }
 
     if (first == TRUE) {
-      outbuf = gst_rtcp_buffer_new (1400);
+      outbuf = gst_rtcp_buffer_new (MPRTCP_PACKET_DEFAULT_MTU);
       gst_rtcp_buffer_map (outbuf, GST_MAP_READWRITE, &rtcp);
       first = FALSE;
     }

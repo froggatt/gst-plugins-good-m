@@ -36,13 +36,10 @@ typedef struct _GstMprtpreceiverClass GstMprtpreceiverClass;
 struct _GstMprtpreceiver
 {
   GstElement     base_mprtpreceiver;
-  gboolean       caps_not_set;
 
   GRWLock        rwmutex;
   GList*         subflows;
   GstPad*        mprtp_srcpad;
-  GstPad*        rtcp_sinkpad;
-  GstPad*        rtcp_srcpad;
   GstPad*        mprtcp_rr_srcpad;
   GstPad*        mprtcp_sr_srcpad;
 };
