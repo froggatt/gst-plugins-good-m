@@ -454,7 +454,7 @@ _select_mprtcp_outpad (GstMprtpreceiver * this, GstBuffer * buf)
   guint8 info_type;
   guint16 subflow_id;
   guint8 block_riport_type;
-  gboolean sr_riport = FALSE;
+  gboolean rr_riport = FALSE;
 
 
   if (G_UNLIKELY (!gst_rtcp_buffer_map (buf, GST_MAP_READ, &rtcp))) {
@@ -473,13 +473,14 @@ _select_mprtcp_outpad (GstMprtpreceiver * this, GstBuffer * buf)
     block_header = &block->block_header;
     gst_rtcp_header_getdown (block_header, NULL, NULL, NULL,
         &block_riport_type, NULL, NULL);
-    if (block_riport_type == GST_RTCP_TYPE_SR) {
-      sr_riport = TRUE;
+    if (block_riport_type == GST_RTCP_TYPE_RR ||
+        block_riport_type == GST_RTCP_TYPE_XR) {
+      rr_riport = TRUE;
     }
 
   }
 
-  result = sr_riport ? this->mprtcp_sr_srcpad : this->mprtcp_rr_srcpad;
+  result = rr_riport ? this->mprtcp_rr_srcpad : this->mprtcp_sr_srcpad;
   return result;
 }
 
