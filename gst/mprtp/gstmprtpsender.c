@@ -76,6 +76,10 @@ static void gst_mprtpsender_src_unlink (GstPad * pad, GstObject * parent);
 
 static GstFlowReturn gst_mprtpsender_mprtp_sink_chain (GstPad * pad,
     GstObject * parent, GstBuffer * buffer);
+static gboolean
+gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad, GstObject * parent,
+    GstEvent * event);
+
 
 typedef struct
 {
@@ -90,9 +94,8 @@ _select_subflow (GstMprtpsender * this, guint8 id, Subflow ** result);
 
 enum
 {
+  PROP_0,
   PROP_PIVOT_OUTPAD,
-
-  N_PROP,
 };
 
 /* pad templates */
@@ -109,8 +112,7 @@ static GstStaticPadTemplate gst_mprtpsender_mprtp_sink_template =
 GST_STATIC_PAD_TEMPLATE ("mprtp_sink",
     GST_PAD_SINK,
     GST_PAD_REQUEST,
-    GST_STATIC_CAPS ("application/x-rtp")
-    );
+    GST_STATIC_CAPS_ANY);
 
 
 static GstStaticPadTemplate gst_mprtpsender_mprtcp_rr_sink_template =
@@ -164,6 +166,39 @@ struct _GstMprtpsenderPrivate
   GstAllocationParams params;
   GstQuery *query;
 };
+
+
+gboolean
+gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad, GstObject * parent,
+    GstEvent * event)
+{
+  GstMprtpsender *this;
+  const GstStructure *s;
+  gboolean result = TRUE;
+  GList *it;
+  Subflow *subflow;
+  guint subflow_id, state_value;
+
+  this = GST_MPRTPSENDER (parent);
+  THIS_WRITELOCK (this);
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_SEGMENT:
+    case GST_EVENT_CAPS:
+      for (subflow = NULL, it = this->subflows; it != NULL; it = it->next) {
+        subflow = it->data;
+        result &= gst_pad_push_event (subflow->outpad, gst_event_copy (event));
+      }
+      result &= gst_pad_event_default (pad, parent, event);
+      break;
+    default:
+      result = gst_pad_event_default (pad, parent, event);
+  }
+
+  THIS_WRITEUNLOCK (this);
+  return result;
+}
+
 
 static void
 gst_mprtpsender_class_init (GstMprtpsenderClass * klass)
@@ -236,13 +271,14 @@ gst_mprtpsender_init (GstMprtpsender * mprtpsender)
       "mprtp_sink");
   gst_pad_set_chain_function (mprtpsender->mprtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpsender_mprtp_sink_chain));
+  gst_pad_set_event_function (mprtpsender->mprtp_sinkpad,
+      GST_DEBUG_FUNCPTR (gst_mprtpsender_mprtp_sink_event_handler));
 
   gst_element_add_pad (GST_ELEMENT (mprtpsender), mprtpsender->mprtp_sinkpad);
 
-  GST_PAD_SET_PROXY_CAPS (mprtpsender->mprtp_sinkpad);
-  GST_PAD_SET_PROXY_ALLOCATION (mprtpsender->mprtp_sinkpad);
+//  GST_PAD_SET_PROXY_CAPS (mprtpsender->mprtp_sinkpad);
+//  GST_PAD_SET_PROXY_ALLOCATION (mprtpsender->mprtp_sinkpad);
 
-  mprtpsender->iterator = NULL;
   mprtpsender->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   mprtpsender->pivot_outpad = NULL;
   //mprtpsender->events = g_queue_new();
@@ -334,6 +370,8 @@ gst_mprtpsender_request_new_pad (GstElement * element, GstPadTemplate * templ,
   subflow = (Subflow *) g_malloc0 (sizeof (Subflow));
 
   srcpad = gst_pad_new_from_template (templ, name);
+//  GST_PAD_SET_PROXY_CAPS (srcpad);
+//  GST_PAD_SET_PROXY_ALLOCATION (srcpad);
 
   gst_pad_set_link_function (srcpad,
       GST_DEBUG_FUNCPTR (gst_mprtpsender_src_link));
@@ -566,6 +604,7 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
   n = g_list_length (this->subflows);
   if (n < 1) {
     GST_ERROR_OBJECT (this, "No appropiate subflow");
+    gst_buffer_unmap (buf, &map);
     result = GST_FLOW_CUSTOM_ERROR;
     goto done;
   }
@@ -589,9 +628,9 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
     }
   }
 
+  gst_buffer_unmap (buf, &map);
   result = gst_pad_push (outpad, buf);
 done:
-  gst_buffer_unmap (buf, &map);
   THIS_READUNLOCK (this);
 exit:
   return result;
