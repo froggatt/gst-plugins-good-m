@@ -22,6 +22,7 @@
 
 #include <gst/gst.h>
 #include "gstmprtcpbuffer.h"
+#include "streamjoiner.h"
 
 G_BEGIN_DECLS
 
@@ -40,29 +41,29 @@ struct _GstMprtpplayouter
 {
   GstElement base_mprtpreceiver;
 
+  GRWLock       rwmutex;
+
   guint8         ext_header_id;
   guint32        pivot_ssrc;
   guint32        pivot_clock_rate;
-  guint64        ext_rtptime;
-  GList*         subflows;
-  gboolean       compound_sending;
-  gboolean       subflow_riports_enabled;
+  gboolean       auto_flow_riporting;
+
   GstPad*        mprtp_srcpad;
   GstPad*        mprtp_sinkpad;
   GstPad*        mprtcp_sr_sinkpad;
   GstPad*        mprtcp_rr_srcpad;
+  gboolean       riport_flow_signal_sent;
 
-  gboolean       flowable;
-  gfloat         playout_delay;
-  GMutex         mutex;
-  guint32        path_skews[256];
-  gint           path_skew_index;
-  gint           path_skew_counter;
-  guint          rtcp_sent_octet_sum;
-  GstTask*       playouter;
-  GRecMutex      playouter_mutex;
-  GstTask*       riporter;
-  GRecMutex      riporter_mutex;
+  GHashTable*    paths;
+  StreamJoiner*  joiner;
+  gpointer       controller;
+
+  void           (*controller_add_path)(gpointer,guint8,MPRTPRPath*);
+  void           (*controller_rem_path)(gpointer,guint8);
+  void           (*mprtcp_receiver)(gpointer,GstBuffer*);
+  void           (*riport_can_flow)(gpointer);
+  guint32        rtcp_sent_octet_sum;
+
 };
 
 struct _GstMprtpplayouterClass

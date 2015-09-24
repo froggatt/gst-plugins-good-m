@@ -1,0 +1,341 @@
+/* GStreamer Mprtp sender subflow
+ * Copyright (C) 2015 Balázs Kreith (contact: balazs.kreith@gmail.com)
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Library General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Library General Public License for more details.
+ *
+ * You should have received a copy of the GNU Library General Public
+ * License along with this library; if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
+ * Boston, MA 02110-1301, USA.
+ */
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include <gst/rtp/gstrtpbuffer.h>
+#include <gst/rtp/gstrtcpbuffer.h>
+#include "mprtpspath.h"
+#include "gstmprtcpbuffer.h"
+
+#define THIS_READLOCK(this) g_rw_lock_reader_lock(&this->rwmutex)
+#define THIS_READUNLOCK(this) g_rw_lock_reader_unlock(&this->rwmutex)
+#define THIS_WRITELOCK(this) g_rw_lock_writer_lock(&this->rwmutex)
+#define THIS_WRITEUNLOCK(this) g_rw_lock_writer_unlock(&this->rwmutex)
+
+GST_DEBUG_CATEGORY_STATIC (gst_mprtps_path_category);
+#define GST_CAT_DEFAULT gst_mprtps_path_category
+
+G_DEFINE_TYPE (MPRTPSPath, mprtps_path, G_TYPE_OBJECT);
+
+static void mprtps_path_finalize (GObject * object);
+static void mprtps_path_reset (MPRTPSPath * this);
+
+void
+mprtps_path_class_init (MPRTPSPathClass * klass)
+{
+  GObjectClass *gobject_class;
+
+  gobject_class = (GObjectClass *) klass;
+
+  gobject_class->finalize = mprtps_path_finalize;
+
+  GST_DEBUG_CATEGORY_INIT (gst_mprtps_path_category, "mprtpspath", 0,
+      "MPRTP Sender Path");
+}
+
+MPRTPSPath *
+make_mprtps_path (guint8 id)
+{
+  MPRTPSPath *result;
+
+  result = g_object_new (MPRTPS_PATH_TYPE, NULL);
+  THIS_WRITELOCK (result);
+  result->id = id;
+  THIS_WRITEUNLOCK (result);
+  return result;
+
+
+}
+
+/**
+ * mprtps_path_reset:
+ * @src: an #MPRTPSPath
+ *
+ * Reset the subflow of @src.
+ */
+void
+mprtps_path_reset (MPRTPSPath * this)
+{
+  this->is_new = TRUE;
+  this->seq = 0;
+  this->cycle_num = 0;
+  this->state = MPRTPS_PATH_FLAG_ACTIVE |
+      MPRTPS_PATH_FLAG_NON_CONGESTED | MPRTPS_PATH_FLAG_NON_LOSSY;
+
+  this->sent_packet_num = 0;
+  this->total_sent_packet_num = 0;
+  this->sent_payload_bytes_sum = 0;
+  this->total_sent_payload_bytes_sum = 0;
+}
+
+
+void
+mprtps_path_init (MPRTPSPath * this)
+{
+  g_rw_lock_init (&this->rwmutex);
+  this->sysclock = gst_system_clock_obtain ();
+  mprtps_path_reset (this);
+}
+
+
+void
+mprtps_path_finalize (GObject * object)
+{
+  MPRTPSPath *this = MPRTPS_PATH_CAST (object);
+  g_object_unref (this->sysclock);
+
+
+}
+
+gboolean
+mprtps_path_is_new (MPRTPSPath * this)
+{
+  gboolean result;
+  THIS_READLOCK (this);
+  result = this->is_new;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+void
+mprtps_path_set_not_new (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->is_new = FALSE;
+  THIS_WRITEUNLOCK (this);
+}
+
+MPRTPSPathState
+mprtps_path_get_state (MPRTPSPath * this)
+{
+  MPRTPSPathState result;
+  THIS_READLOCK (this);
+  if ((this->state & (guint8) MPRTPS_PATH_FLAG_ACTIVE) == 0) {
+    result = MPRTPS_PATH_STATE_PASSIVE;
+    goto done;
+  }
+  if ((this->state & (guint8) MPRTPS_PATH_FLAG_NON_CONGESTED) == 0) {
+    result = MPRTPS_PATH_STATE_CONGESTED;
+    goto done;
+  }
+  if ((this->state & (guint8) MPRTPS_PATH_FLAG_NON_LOSSY) == 0) {
+    result = MPRTPS_PATH_STATE_MIDDLY_CONGESTED;
+    goto done;
+  }
+  result = MPRTPS_PATH_STATE_NON_CONGESTED;
+done:
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+
+gboolean
+mprtps_path_is_active (MPRTPSPath * this)
+{
+  gboolean result;
+  THIS_READLOCK (this);
+  result = (this->state & (guint8) MPRTPS_PATH_FLAG_ACTIVE) ? TRUE : FALSE;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+
+void
+mprtps_path_set_active (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state |= (guint8) MPRTPS_PATH_FLAG_ACTIVE;
+  this->sent_active = gst_clock_get_time (this->sysclock);
+  this->sent_passive = 0;
+  THIS_WRITEUNLOCK (this);
+}
+
+
+void
+mprtps_path_set_passive (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state &= (guint8) 255 ^ (guint8) MPRTPS_PATH_FLAG_ACTIVE;
+  this->sent_passive = gst_clock_get_time (this->sysclock);
+  this->sent_active = 0;
+  THIS_WRITEUNLOCK (this);
+}
+
+GstClockTime
+mprtps_path_get_time_sent_to_passive (MPRTPSPath * this)
+{
+  GstClockTime result;
+  THIS_READLOCK (this);
+  result = this->sent_passive;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+
+gboolean
+mprtps_path_is_non_lossy (MPRTPSPath * this)
+{
+  gboolean result;
+  THIS_READLOCK (this);
+  result = (this->state & (guint8) MPRTPS_PATH_FLAG_NON_LOSSY) ? TRUE : FALSE;
+  THIS_READUNLOCK (this);
+  return result;
+
+}
+
+void
+mprtps_path_set_lossy (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state &= (guint8) 255 ^ (guint8) MPRTPS_PATH_FLAG_NON_LOSSY;
+  THIS_WRITEUNLOCK (this);
+}
+
+void
+mprtps_path_set_non_lossy (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state |= (guint8) MPRTPS_PATH_FLAG_NON_LOSSY;
+  THIS_WRITEUNLOCK (this);
+}
+
+
+gboolean
+mprtps_path_is_non_congested (MPRTPSPath * this)
+{
+  gboolean result;
+  THIS_READLOCK (this);
+  result =
+      (this->state & (guint8) MPRTPS_PATH_FLAG_NON_CONGESTED) ? TRUE : FALSE;
+  THIS_READUNLOCK (this);
+  return result;
+
+}
+
+void
+mprtps_path_set_congested (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state &= (guint8) 255 ^ (guint8) MPRTPS_PATH_FLAG_NON_CONGESTED;
+  THIS_WRITEUNLOCK (this);
+}
+
+
+void
+mprtps_path_set_non_congested (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state |= (guint8) MPRTPS_PATH_FLAG_NON_CONGESTED;
+  THIS_WRITEUNLOCK (this);
+}
+
+
+guint8
+mprtps_path_get_id (MPRTPSPath * this)
+{
+  guint16 result;
+  THIS_READLOCK (this);
+  result = this->id;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+guint32
+mprtps_path_get_sent_packet_num (MPRTPSPath * this)
+{
+  guint32 result;
+  THIS_WRITELOCK (this);
+  result = this->sent_packet_num;
+  this->sent_packet_num = 0;
+  THIS_WRITEUNLOCK (this);
+  return result;
+}
+
+guint32
+mprtps_path_get_total_sent_packet_num (MPRTPSPath * this)
+{
+  guint32 result;
+  THIS_WRITELOCK (this);
+  result = this->total_sent_packet_num;
+  this->total_sent_packet_num = 0;
+  THIS_WRITEUNLOCK (this);
+  return result;
+}
+
+
+guint32
+mprtps_path_get_sent_payload_bytes (MPRTPSPath * this)
+{
+  guint32 result;
+  THIS_WRITELOCK (this);
+  result = this->sent_payload_bytes_sum;
+  this->sent_payload_bytes_sum = 0;
+  THIS_WRITEUNLOCK (this);
+  return result;
+}
+
+guint32
+mprtps_path_get_total_sent_payload_bytes (MPRTPSPath * this)
+{
+  guint32 result;
+  THIS_READLOCK (this);
+  result = this->total_sent_payload_bytes_sum;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+
+void
+mprtps_path_process_rtp_packet (MPRTPSPath * this,
+    guint ext_header_id, GstRTPBuffer * rtp)
+{
+  MPRTPSubflowHeaderExtension data;
+  guint payload_bytes;
+  THIS_WRITELOCK (this);
+  data.id = this->id;
+  if (++(this->seq) == 0) {
+    ++(this->cycle_num);
+  }
+  data.seq = this->seq;
+
+  ++(this->sent_packet_num);
+  ++(this->total_sent_packet_num);
+  payload_bytes = gst_rtp_buffer_get_payload_len (rtp);
+  this->sent_payload_bytes_sum += payload_bytes;
+  this->total_sent_payload_bytes_sum += payload_bytes;
+  gst_rtp_buffer_add_extension_onebyte_header (rtp, ext_header_id,
+      (gpointer) & data, sizeof (data));
+
+  THIS_WRITEUNLOCK (this);
+}
+
+#undef THIS_READLOCK
+#undef THIS_READUNLOCK
+#undef THIS_WRITELOCK
+#undef THIS_WRITEUNLOCK

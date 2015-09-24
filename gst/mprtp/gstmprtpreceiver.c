@@ -37,8 +37,8 @@
 #include <gst/gst.h>
 #include <stdio.h>
 #include "gstmprtpreceiver.h"
-#include "mprtpssubflow.h"
-#include "mprtprsubflow.h"
+#include "mprtpspath.h"
+#include "mprtprpath.h"
 #include "gstmprtcpbuffer.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_mprtpreceiver_debug_category);
@@ -312,18 +312,19 @@ gst_mprtpreceiver_sink_event (GstPad * pad, GstObject * parent,
     GstEvent * event)
 {
   GstMprtpreceiver *this = GST_MPRTPRECEIVER (parent);
-  gboolean result;
+  gboolean result = FALSE;
   GstPad *peer;
 
   GST_DEBUG_OBJECT (this, "sink event");
   g_print ("EVENT to the sink: %s\n", GST_EVENT_TYPE_NAME (event));
-  switch (GST_QUERY_TYPE (event)) {
+  switch (GST_EVENT_TYPE (event)) {
     default:
       if (gst_pad_is_linked (this->mprtp_srcpad)) {
         peer = gst_pad_get_peer (this->mprtp_srcpad);
         result = gst_pad_send_event (peer, event);
         gst_object_unref (peer);
       }
+      result = gst_pad_event_default (pad, parent, event);
       break;
   }
 

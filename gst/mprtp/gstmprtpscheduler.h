@@ -21,9 +21,10 @@
 #define _GST_MPRTPSCHEDULER_H_
 
 #include <gst/gst.h>
-#include "mprtpssubflow.h"
-#include "schtree.h"
+
 #include "gstmprtcpbuffer.h"
+#include "mprtpspath.h"
+#include "streamsplitter.h"
 
 G_BEGIN_DECLS
 
@@ -37,27 +38,38 @@ G_BEGIN_DECLS
 #define GST_MPRTCP_SCHEDULER_SENT_OCTET_SUM_FIELD "RTCPSchedulerSentBytes"
 
 typedef struct _GstMprtpscheduler GstMprtpscheduler;
-typedef struct _GstMprtpschedulerPrivate GstMprtpschedulerPrivate;
 typedef struct _GstMprtpschedulerClass GstMprtpschedulerClass;
-typedef struct _GstMprtpschedulerSubflowRate GstMprtpschedulerSubflowRate;
 
-struct _GstMprtpschedulerSubflowRate{
-  guint8 subflow_id;
-  gfloat rate;
-};
 
 struct _GstMprtpscheduler
 {
-  GstElement     base_object;
+  GstElement      base_object;
 
-  GstPad        *rtp_sinkpad;
-  GstPad        *mprtp_srcpad;
+  GstPad*         rtp_sinkpad;
+  GstPad*         mprtp_srcpad;
   //GstPad        *rtcp_sinkpad;
   //GstPad        *rtcp_srcpad;
-  GstPad        *mprtcp_rr_sinkpad;
-  GstPad        *mprtcp_sr_srcpad;
-  //GstPad        *mprtcp_send_sinkpad;
+  GstPad*          mprtcp_rr_sinkpad;
+  GstPad*          mprtcp_sr_srcpad;
 
+  gfloat           alpha_value;
+  gfloat           beta_value;
+  gfloat           gamma_value;
+  guint8           ext_header_id;
+  guint            flow_controlling_mode;
+  GHashTable*      paths;
+  GRWLock          rwmutex;
+  StreamSplitter*  splitter;
+  gpointer         controller;
+  gboolean         riport_flow_signal_sent;
+
+  void           (*controller_add_path)(gpointer,guint8,MPRTPSPath*);
+  void           (*controller_rem_path)(gpointer,guint8);
+  void           (*mprtcp_receiver)(gpointer,GstBuffer*);
+  void           (*riport_can_flow)(gpointer);
+  guint32        rtcp_sent_octet_sum;
+
+  /*
   gboolean       flowable;
   guint          rtcp_sent_octet_sum;
   GMutex         subflows_mutex;
@@ -68,14 +80,11 @@ struct _GstMprtpscheduler
   gboolean       auto_sending_rates_enabled;
   guint16        mprtcp_mtu;
   gfloat         charge_value;
-  gfloat         alpha_value;
-  gfloat         beta_value;
-  gfloat         gamma_value;
+
   guint32        max_delay;
   GList*         subflows;
   gboolean       has_new_manual_sending_rate;
   gboolean       no_active_subflows;
-  SchTree*       schtree;
   GstTask*       scheduler;
   guint32        scheduler_state;
   GRecMutex      scheduler_mutex;
@@ -84,8 +93,8 @@ struct _GstMprtpscheduler
   GCond          scheduler_cond;
   GstClockTime   scheduler_last_run;
   GstClockTime   last_schtree_commit;
+  */
 
-  GstMprtpschedulerPrivate *priv;
 };
 
 struct _GstMprtpschedulerClass

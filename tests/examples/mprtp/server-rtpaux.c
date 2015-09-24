@@ -196,37 +196,80 @@ request_aux_sender (GstElement * rtpbin, guint sessid, SessionData * session)
 
 typedef struct _Identities
 {
+  GstElement *mprtpsch;
   GstElement *identity_s1;
   GstElement *identity_s2;
   guint called;
 } Identities;
 
-gboolean
-_timeout_callback (gpointer data)
+
+//
+//gboolean
+//_timeout_callback (gpointer data)
+//{
+//  Identities *ids = data;
+//
+//  //g_print("Called %d\n", ids->called);
+//  switch (ids->called) {
+//    case 0:
+//      g_print ("Subflow 1 dp: 0.2, subflow 2 dp: 0.0\n");
+//      g_object_set (ids->identity_s1, "drop-probability", 0.2, NULL);
+//      g_object_set (ids->identity_s2, "drop-probability", 0.0, NULL);
+//      break;
+//    case 1:
+//      g_print ("Subflow 1 dp: 0.0, subflow 2 dp: 0.2\n");
+//      g_object_set (ids->identity_s1, "drop-probability", 0.0, NULL);
+//      g_object_set (ids->identity_s2, "drop-probability", 0.2, NULL);
+//      break;
+//    case 2:
+//      g_print ("Subflow 1 dp: 0.1, subflow 2 dp: 0.0\n");
+//      g_object_set (ids->identity_s1, "drop-probability", 0.1, NULL);
+//      g_object_set (ids->identity_s2, "drop-probability", 0.0, NULL);
+//      break;
+//    case 3:
+//      g_print ("Subflow 1 dp: 0.0, subflow 2 dp: 0.1\n");
+//      g_object_set (ids->identity_s1, "drop-probability", 0.0, NULL);
+//      g_object_set (ids->identity_s2, "drop-probability", 0.1, NULL);
+//      break;
+//    default:
+//      break;
+//  }
+//  ++ids->called;
+//  return TRUE;
+//}
+
+
+
+static gboolean
+_timeout_callback_manual (gpointer data)
 {
   Identities *ids = data;
 
-  //g_print("Called %d\n", ids->called);
+  g_print ("Called %d\n", ids->called);
   switch (ids->called) {
     case 0:
-      g_print ("Subflow 1 dp: 0.2, subflow 2 dp: 0.0\n");
-      g_object_set (ids->identity_s1, "drop-probability", 0.2, NULL);
-      g_object_set (ids->identity_s2, "drop-probability", 0.0, NULL);
+      g_object_set (ids->mprtpsch,
+          "setup-sending-bid", (1 << 24) | 70,
+          "setup-sending-bid", (2 << 24) | 30, NULL);
+      g_print ("subflow 1: 70, subflow 2: 30\n");
       break;
     case 1:
-      g_print ("Subflow 1 dp: 0.0, subflow 2 dp: 0.2\n");
-      g_object_set (ids->identity_s1, "drop-probability", 0.0, NULL);
-      g_object_set (ids->identity_s2, "drop-probability", 0.2, NULL);
+      g_object_set (ids->mprtpsch,
+          "setup-sending-bid", (1 << 24) | 30,
+          "setup-sending-bid", (2 << 24) | 70, NULL);
+      g_print ("subflow 1: 30, subflow 2: 70\n");
       break;
     case 2:
-      g_print ("Subflow 1 dp: 0.1, subflow 2 dp: 0.0\n");
-      g_object_set (ids->identity_s1, "drop-probability", 0.1, NULL);
-      g_object_set (ids->identity_s2, "drop-probability", 0.0, NULL);
+      g_object_set (ids->mprtpsch,
+          "setup-sending-bid", (1 << 24) | 1,
+          "setup-sending-bid", (2 << 24) | 9, NULL);
+      g_print ("subflow 1: 1, subflow 2: 9\n");
       break;
     case 3:
-      g_print ("Subflow 1 dp: 0.0, subflow 2 dp: 0.1\n");
-      g_object_set (ids->identity_s1, "drop-probability", 0.0, NULL);
-      g_object_set (ids->identity_s2, "drop-probability", 0.1, NULL);
+      g_object_set (ids->mprtpsch,
+          "setup-sending-bid", (1 << 24) | 99,
+          "setup-sending-bid", (2 << 24) | 1, NULL);
+      g_print ("subflow 1: 99, subflow 2: 1\n");
       break;
     default:
       break;
@@ -235,16 +278,17 @@ _timeout_callback (gpointer data)
   return TRUE;
 }
 
+
 /*
  * This function sets up the UDP sinks and sources for RTP/RTCP, adds the
  * given session's bin into the pipeline, and links it to the properly numbered
  * pads on the rtpbin
  */
+
 static void
 add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
 {
 
-  GstElement *try = gst_element_factory_make ("try", NULL);
   GstElement *rtpSink_1 = gst_element_factory_make ("udpsink", NULL);
   GstElement *rtpSink_2 = gst_element_factory_make ("udpsink", NULL);
   GstElement *rtcpSink = gst_element_factory_make ("udpsink", NULL);
@@ -260,6 +304,7 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
   int basePort;
   gchar *padName;
 
+  ids->mprtpsch = mprtpsch;
   ids->identity_s1 = identity_1;
   ids->identity_s2 = identity_2;
   ids->called = 0;
@@ -267,7 +312,7 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
   basePort = 5000 + (session->sessionNum * 20);
 
   gst_bin_add_many (GST_BIN (pipe), rtpSink_1, rtpSink_2, mprtprcv, mprtpsnd,
-      mprtpsch, try, rtcpSink, rtcpSrc, rtpSrc_1, rtpSrc_2, identity_1,
+      mprtpsch, rtcpSink, rtcpSrc, rtpSrc_1, rtpSrc_2, identity_1,
       identity_2, session->input, NULL);
 
   /* enable retransmission by setting rtprtxsend as the "aux" element of rtpbin */
@@ -285,12 +330,15 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
   g_object_set (rtpSrc_1, "port", basePort + 11, NULL);
   g_object_set (rtpSrc_2, "port", basePort + 12, NULL);
   g_object_set (rtcpSrc, "port", basePort + 10, NULL);
+  g_object_set (mprtpsch, "auto-flow-controlling", TRUE, NULL);
+
 
   /* this is just to drop some rtp packets at random, to demonstrate
    * that rtprtxsend actually works */
   //g_object_set (identity, "drop-probability", 0.1, NULL);
 
-  //g_timeout_add (30000, _timeout_callback, ids);
+  //g_timeout_add (10000, _timeout_callback, ids);
+  g_timeout_add (10000, _timeout_callback_manual, ids);
 
   padName = g_strdup_printf ("send_rtp_sink_%u", session->sessionNum);
   gst_element_link_pads (session->input, "src", rtpBin, padName);

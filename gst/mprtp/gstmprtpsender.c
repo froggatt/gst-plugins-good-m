@@ -37,17 +37,16 @@
 #include <stdio.h>
 #include <gst/gst.h>
 #include "gstmprtpsender.h"
-#include "mprtpssubflow.h"
+#include "mprtpspath.h"
 #include "gstmprtcpbuffer.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_mprtpsender_debug_category);
 #define GST_CAT_DEFAULT gst_mprtpsender_debug_category
 
-#define THIS_WRITELOCK(mprtcp_ptr) (g_rw_lock_writer_lock(&mprtcp_ptr->rwmutex))
-#define THIS_WRITEUNLOCK(mprtcp_ptr) (g_rw_lock_writer_unlock(&mprtcp_ptr->rwmutex))
-
-#define THIS_READLOCK(mprtcp_ptr) (g_rw_lock_reader_lock(&mprtcp_ptr->rwmutex))
-#define THIS_READUNLOCK(mprtcp_ptr) (g_rw_lock_reader_unlock(&mprtcp_ptr->rwmutex))
+#define THIS_WRITELOCK(this) (g_rw_lock_writer_lock(&this->rwmutex))
+#define THIS_WRITEUNLOCK(this) (g_rw_lock_writer_unlock(&this->rwmutex))
+#define THIS_READLOCK(this) (g_rw_lock_reader_lock(&this->rwmutex))
+#define THIS_READUNLOCK(this) (g_rw_lock_reader_unlock(&this->rwmutex))
 
 #define PACKET_IS_RTP(b) (b > 0x7f && b < 0xc0)
 #define PACKET_IS_DTLS(b) (b > 0x13 && b < 0x40)
@@ -173,11 +172,9 @@ gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad, GstObject * parent,
     GstEvent * event)
 {
   GstMprtpsender *this;
-  const GstStructure *s;
   gboolean result = TRUE;
   GList *it;
   Subflow *subflow;
-  guint subflow_id, state_value;
 
   this = GST_MPRTPSENDER (parent);
   THIS_WRITELOCK (this);

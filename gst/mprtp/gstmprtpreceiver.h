@@ -42,6 +42,7 @@ struct _GstMprtpreceiver
   GstPad*        mprtp_srcpad;
   GstPad*        mprtcp_rr_srcpad;
   GstPad*        mprtcp_sr_srcpad;
+
 };
 
 struct _GstMprtpreceiverClass

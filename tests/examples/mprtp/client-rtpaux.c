@@ -320,6 +320,7 @@ join_session (GstElement * pipeline, GstElement * rtpBin, SessionData * session,
 
   g_object_set (mprtpply, "join-subflow", 1, NULL);
   g_object_set (mprtpply, "join-subflow", 2, NULL);
+  g_object_set (mprtpply, "auto-flow-riporting", TRUE, NULL);
 
   g_print ("Connecting to %i/%i/%i/%i/%i/%i\n",
       basePort, basePort + 1, basePort + 5,
