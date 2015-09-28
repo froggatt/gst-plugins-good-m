@@ -134,7 +134,7 @@ static GstStaticPadTemplate gst_mprtpscheduler_mprtcp_rr_sink_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("ANY")
+    GST_STATIC_CAPS ("application/x-mprtcp-b")
     );
 
 
@@ -142,7 +142,7 @@ static GstStaticPadTemplate gst_mprtpscheduler_mprtcp_sr_src_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("ANY")
+    GST_STATIC_CAPS ("application/x-mprtcp")
     );
 
 

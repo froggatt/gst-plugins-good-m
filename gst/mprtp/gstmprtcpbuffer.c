@@ -170,16 +170,16 @@ gst_rtcp_add_end (GstRTCPBuffer * rtcp, GstRTCPHeader * header)
   rtcp->map.size += length;
 }
 
-GstMPRTCPSubflowRiport *
+GstMPRTCPSubflowReport *
 gst_mprtcp_add_riport (GstRTCPHeader * header)
 {
-  GstMPRTCPSubflowRiport *result = (GstMPRTCPSubflowRiport *) header;
-  gst_mprtcp_riport_init (result);
+  GstMPRTCPSubflowReport *result = (GstMPRTCPSubflowReport *) header;
+  gst_mprtcp_report_init (result);
   return result;
 }
 
 GstMPRTCPSubflowBlock *
-gst_mprtcp_riport_add_block_begin (GstMPRTCPSubflowRiport * riport,
+gst_mprtcp_riport_add_block_begin (GstMPRTCPSubflowReport * riport,
     guint16 subflow_id)
 {
   guint8 i, src, *ptr;
@@ -198,6 +198,25 @@ gst_mprtcp_riport_add_block_begin (GstMPRTCPSubflowRiport * riport,
   gst_rtcp_header_change (&riport->header, NULL, NULL, &src, NULL, NULL, NULL);
   return result;
 }
+
+
+void
+gst_mprtcp_riport_append_block (GstMPRTCPSubflowReport * report,
+    GstMPRTCPSubflowBlock * block)
+{
+  gpointer dst, src;
+  GstMPRTCPSubflowBlock *next;
+  guint8 block_length;
+  guint16 subflow_id;
+
+  gst_mprtcp_block_getdown (&block->info, NULL, &block_length, &subflow_id);
+  next = gst_mprtcp_riport_add_block_begin (report, subflow_id);
+  dst = (gpointer) next;
+  src = (gpointer) block;
+  memcpy (dst, src, (block_length + 1) << 2);
+  gst_mprtcp_riport_add_block_end (report, next);
+}
+
 
 GstRTCPSR *
 gst_mprtcp_riport_block_add_sr (GstMPRTCPSubflowBlock * block)
@@ -225,7 +244,7 @@ gst_mprtcp_riport_block_add_xr_rfc2743 (GstMPRTCPSubflowBlock * block)
 
 
 void
-gst_mprtcp_riport_add_block_end (GstMPRTCPSubflowRiport * riport,
+gst_mprtcp_riport_add_block_end (GstMPRTCPSubflowReport * riport,
     GstMPRTCPSubflowBlock * block)
 {
   guint16 riport_length, block_header_length;
@@ -285,13 +304,13 @@ gst_rtcp_get_next_header (GstRTCPBuffer * rtcp, GstRTCPHeader * actual)
 }
 
 GstMPRTCPSubflowBlock *
-gst_mprtcp_get_first_block (GstMPRTCPSubflowRiport * riport)
+gst_mprtcp_get_first_block (GstMPRTCPSubflowReport * riport)
 {
   return &riport->blocks;
 }
 
 GstMPRTCPSubflowBlock *
-gst_mprtcp_get_next_block (GstMPRTCPSubflowRiport * riport,
+gst_mprtcp_get_next_block (GstMPRTCPSubflowReport * riport,
     GstMPRTCPSubflowBlock * actual)
 {
   guint8 *next = (guint8 *) actual;
@@ -504,7 +523,7 @@ gst_rtcp_xr_rfc7243_getdown (GstRTCPXR_RFC7243 * riport,
 
 
 void
-gst_mprtcp_riport_init (GstMPRTCPSubflowRiport * riport)
+gst_mprtcp_report_init (GstMPRTCPSubflowReport * riport)
 {
   gst_rtcp_header_init (&riport->header);
   gst_rtcp_header_setup (&riport->header, FALSE, 0,
@@ -512,13 +531,13 @@ gst_mprtcp_riport_init (GstMPRTCPSubflowRiport * riport)
 }
 
 void
-gst_mprtcp_riport_setup (GstMPRTCPSubflowRiport * riport, guint32 ssrc)
+gst_mprtcp_riport_setup (GstMPRTCPSubflowReport * riport, guint32 ssrc)
 {
   riport->ssrc = g_htonl (ssrc);
 }
 
 void
-gst_mprtcp_riport_getdown (GstMPRTCPSubflowRiport * riport, guint32 * ssrc)
+gst_mprtcp_riport_getdown (GstMPRTCPSubflowReport * riport, guint32 * ssrc)
 {
   if (ssrc) {
     *ssrc = g_ntohl (riport->ssrc);
@@ -714,7 +733,7 @@ gst_print_rtcp (GstRTCPHeader * header)
         NULL, &payload_type, &length, NULL);
     switch (payload_type) {
       case MPRTCP_PACKET_TYPE_IDENTIFIER:
-        gst_print_mprtcp ((GstMPRTCPSubflowRiport *) step);
+        gst_print_mprtcp ((GstMPRTCPSubflowReport *) step);
         break;
       case GST_RTCP_TYPE_SR:
         gst_print_rtcp_sr ((GstRTCPSR *) step);
@@ -736,7 +755,7 @@ gst_print_rtcp (GstRTCPHeader * header)
 
 
 void
-gst_print_mprtcp (GstMPRTCPSubflowRiport * riport)
+gst_print_mprtcp (GstMPRTCPSubflowReport * riport)
 {
   gint index;
   GstMPRTCPSubflowBlock *block = &riport->blocks;

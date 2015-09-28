@@ -37,6 +37,7 @@ GST_DEBUG_CATEGORY_STATIC (stream_splitter_debug_category);
 #define THIS_WRITELOCK(this) g_rw_lock_writer_lock(&this->rwmutex)
 #define THIS_WRITEUNLOCK(this) g_rw_lock_writer_unlock(&this->rwmutex)
 
+#define DEBUG_DATA_ON
 /* class initialization */
 G_DEFINE_TYPE (StreamSplitter, stream_splitter, G_TYPE_OBJECT);
 
@@ -55,6 +56,10 @@ struct _Subflow
   MPRTPSPath *path;
   guint32 actual_bid;
   guint32 new_bid;
+#ifdef DEBUG_DATA_ON
+  guint32 actual_total_sent_packet_num;
+  guint32 last_total_sent_packet_num;
+#endif
 };
 
 //----------------------------------------------------------------------
@@ -251,15 +256,21 @@ stream_splitter_run (void *data)
 
   if (!this->new_path_added &&
       !this->path_is_removed && !this->changes_are_committed) {
-    //debug printing
+#ifdef DEBUG_DATA_ON
     g_hash_table_iter_init (&iter, this->subflows);
     while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
       //subflow_id = *((guint8*) key);
       subflow = (Subflow *) val;
       path = subflow->path;
+      subflow->actual_total_sent_packet_num =
+          mprtps_path_get_total_sent_packet_num (path);
       g_print ("%p,subflow %d,%d\n", this, mprtps_path_get_id (path),
-          mprtps_path_get_sent_packet_num (path));
+          subflow->actual_total_sent_packet_num -
+          subflow->last_total_sent_packet_num);
+      subflow->last_total_sent_packet_num =
+          subflow->actual_total_sent_packet_num;
     }
+#endif
     goto done;
   }
 
@@ -287,12 +298,18 @@ stream_splitter_run (void *data)
     path_state = mprtps_path_get_state (path);
     if (path_state == MPRTPS_PATH_STATE_NON_CONGESTED) {
       bid_nc_sum += subflow->actual_bid;
-    } else if (mprtps_path_is_non_congested (path)) {
+    } else if (path_state == MPRTPS_PATH_STATE_MIDDLY_CONGESTED) {
       bid_l_sum += subflow->actual_bid;
     }
     //debug printing
+#ifdef DEBUG_DATA_ON
+    subflow->actual_total_sent_packet_num =
+        mprtps_path_get_total_sent_packet_num (path);
     g_print ("%p,subflow %d,%d\n", this, mprtps_path_get_id (path),
-        mprtps_path_get_sent_packet_num (path));
+        subflow->actual_total_sent_packet_num -
+        subflow->last_total_sent_packet_num);
+    subflow->last_total_sent_packet_num = subflow->actual_total_sent_packet_num;
+#endif
   }
 
   _full_tree_commit (this, bid_total_sum);

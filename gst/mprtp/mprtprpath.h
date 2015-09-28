@@ -41,10 +41,10 @@ struct _MPRTPReceiverPath
   guint32       jitter;
 
   guint16       received_since_cycle_is_increased;
-  guint16       late_discarded;
-  guint32       late_discarded_bytes;
-  guint16       early_discarded;
-  guint16       duplicated;
+  guint16       total_late_discarded;
+  guint32       total_late_discarded_bytes;
+  guint16       total_early_discarded;
+  guint16       total_duplicated_packet_num;
   guint16       actual_seq;
 
   guint64       ext_rtptime;
@@ -56,11 +56,10 @@ struct _MPRTPReceiverPath
   GstClockTime  last_received_time;
   GstClock*     sysclock;
   guint16       HSN;
-  guint16       packet_losts;
+  guint16       total_packet_losts;
   guint16       packet_received;
-  guint32       packet_received_for_riports;
-  guint         received_payload_bytes;
-  gfloat        avg_rtp_size;
+//  guint         received_payload_bytes;
+//  gfloat        avg_rtp_size;
 
 };
 
@@ -77,17 +76,14 @@ void mprtpr_path_add_packet_skew (MPRTPRPath * this, guint32 rtptime, guint32 cl
 guint64 mprtpr_path_get_packet_skew_median (MPRTPRPath * this);
 
 guint16 mprtpr_path_get_cycle_num(MPRTPRPath * this);
-gfloat mprtpr_path_get_avg_rtp_size(MPRTPRPath * this);
 guint16 mprtpr_path_get_highest_sequence_number(MPRTPRPath * this);
 guint32 mprtpr_path_get_jitter(MPRTPRPath * this);
-guint32 mprtpr_path_get_packet_received_num_for_riports(MPRTPRPath * this);
-guint mprtpr_path_get_total_received_payload_bytes(MPRTPRPath * this);
-guint16 mprtpr_path_get_packet_losts_num(MPRTPRPath * this);
-guint16 mprtpr_path_get_late_discarded_num(MPRTPRPath * this);
-guint32 mprtpr_path_get_late_discarded_bytes_num(MPRTPRPath * this);
-guint16 mprtpr_path_get_late_duplicated(MPRTPRPath * this);
+guint16 mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this);
+guint16 mprtpr_path_get_total_late_discarded_num(MPRTPRPath * this);
+guint32 mprtpr_path_get_total_late_discarded_bytes_num(MPRTPRPath * this);
+guint16 mprtpr_path_get_total_duplicated_packet_num(MPRTPRPath * this);
 GList *mprtpr_path_get_packets (MPRTPRPath * this);
-guint32 mprtpr_path_get_early_discarded_packets_num (MPRTPRPath * this);
+guint32 mprtpr_path_get_total_early_discarded_packets_num (MPRTPRPath * this);
 guint8 mprtpr_path_get_id (MPRTPRPath * this);
 
 

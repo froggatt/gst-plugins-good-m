@@ -113,10 +113,10 @@ static GstStaticPadTemplate gst_mprtpplayouter_mprtp_sink_template =
 
 
 static GstStaticPadTemplate gst_mprtpplayouter_mprtcp_sr_sink_template =
-    GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_sink",
+GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
+    GST_STATIC_CAPS ("application/x-mprtcp-b")
     );
 
 static GstStaticPadTemplate gst_mprtpplayouter_mprtp_src_template =
@@ -128,10 +128,10 @@ GST_STATIC_PAD_TEMPLATE ("mprtp_src",
 
 
 static GstStaticPadTemplate gst_mprtpplayouter_mprtcp_rr_src_template =
-    GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_src",
+GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
+    GST_STATIC_CAPS ("application/x-mprtcp")
     );
 
 
@@ -630,6 +630,16 @@ gst_mprtpplayouter_mprtcp_sender (gpointer ptr, GstBuffer * buf)
 }
 
 
+GstFlowReturn
+_processing_mprtcp_packet (GstMprtpplayouter * this, GstBuffer * buf)
+{
+  GstFlowReturn result;
+  this->mprtcp_receiver (this->controller, buf);
+  result = GST_FLOW_OK;
+  return result;
+}
+
+
 void
 _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
 {
@@ -680,15 +690,6 @@ _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
 
   mprtpr_path_process_mprtp_packet (path, buf, subflow_infos->seq);
 
-}
-
-GstFlowReturn
-_processing_mprtcp_packet (GstMprtpplayouter * this, GstBuffer * buf)
-{
-  GstFlowReturn result;
-  this->mprtcp_receiver (this->controller, buf);
-  result = GST_FLOW_OK;
-  return result;
 }
 
 gboolean

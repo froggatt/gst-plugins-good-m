@@ -78,10 +78,10 @@ mprtpr_path_reset (MPRTPRPath * this)
   this->cycle_num = 0;
   this->jitter = 0;
   this->received_since_cycle_is_increased = 0;
-  this->late_discarded = 0;
-  this->late_discarded_bytes = 0;
-  this->early_discarded = 0;
-  this->duplicated = 0;
+  this->total_late_discarded = 0;
+  this->total_late_discarded_bytes = 0;
+  this->total_early_discarded = 0;
+  this->total_duplicated_packet_num = 0;
   this->actual_seq = 0;
 
   this->ext_rtptime = 0;
@@ -90,11 +90,8 @@ mprtpr_path_reset (MPRTPRPath * this)
   this->skews_read_index = 0;
   this->last_received_time = 0;
   this->HSN = 0;
-  this->packet_losts = 0;
+  this->total_packet_losts = 0;
   this->packet_received = 0;
-  this->avg_rtp_size = 0.;
-  this->packet_received_for_riports = 0;
-  this->received_payload_bytes = 0;
 }
 
 guint16
@@ -103,17 +100,6 @@ mprtpr_path_get_cycle_num (MPRTPRPath * this)
   guint16 result;
   THIS_READLOCK (this);
   result = this->cycle_num;
-  THIS_READUNLOCK (this);
-  return result;
-}
-
-
-gfloat
-mprtpr_path_get_avg_rtp_size (MPRTPRPath * this)
-{
-  gfloat result;
-  THIS_READLOCK (this);
-  result = this->avg_rtp_size;
   THIS_READUNLOCK (this);
   return result;
 }
@@ -138,70 +124,44 @@ mprtpr_path_get_jitter (MPRTPRPath * this)
   return result;
 }
 
-guint32
-mprtpr_path_get_packet_received_num_for_riports (MPRTPRPath * this)
+guint16
+mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this)
 {
-  guint32 result;
-  THIS_WRITELOCK (this);
-  result = this->packet_received_for_riports;
-  this->packet_received_for_riports = 0;
-  THIS_WRITEUNLOCK (this);
-  return result;
-}
-
-guint
-mprtpr_path_get_total_received_payload_bytes (MPRTPRPath * this)
-{
-  guint result;
-  THIS_WRITELOCK (this);
-  result = this->received_payload_bytes;
-  this->received_payload_bytes = 0;
-  THIS_WRITEUNLOCK (this);
+  guint16 result;
+  THIS_READLOCK (this);
+  result = this->total_packet_losts;
+  THIS_READUNLOCK (this);
   return result;
 }
 
 guint16
-mprtpr_path_get_packet_losts_num (MPRTPRPath * this)
+mprtpr_path_get_total_late_discarded_num (MPRTPRPath * this)
 {
   guint16 result;
-  THIS_WRITELOCK (this);
-  result = this->packet_losts;
-  this->packet_losts = 0;
-  THIS_WRITEUNLOCK (this);
-  return result;
-}
-
-guint16
-mprtpr_path_get_late_discarded_num (MPRTPRPath * this)
-{
-  guint16 result;
-  THIS_WRITELOCK (this);
-  result = this->late_discarded;
-  this->late_discarded = 0;
-  THIS_WRITEUNLOCK (this);
+  THIS_READLOCK (this);
+  result = this->total_late_discarded;
+  THIS_READUNLOCK (this);
   return result;
 }
 
 guint32
-mprtpr_path_get_late_discarded_bytes_num (MPRTPRPath * this)
+mprtpr_path_get_total_late_discarded_bytes_num (MPRTPRPath * this)
 {
   guint32 result;
-  THIS_WRITELOCK (this);
-  result = this->late_discarded_bytes;
-  this->late_discarded_bytes = 0;
-  THIS_WRITEUNLOCK (this);
+  THIS_READLOCK (this);
+  result = this->total_late_discarded_bytes;
+  THIS_READUNLOCK (this);
   return result;
 }
 
 
 guint16
-mprtpr_path_get_late_duplicated (MPRTPRPath * this)
+mprtpr_path_get_total_duplicated_packet_num (MPRTPRPath * this)
 {
   guint16 result;
-  THIS_WRITELOCK (this);
-  result = this->duplicated;
-  this->duplicated = 0;
-  THIS_WRITEUNLOCK (this);
+  THIS_READLOCK (this);
+  result = this->total_duplicated_packet_num;
+  THIS_READUNLOCK (this);
   return result;
 }
 
@@ -235,9 +195,9 @@ mprtpr_path_get_packets (MPRTPRPath * this)
   for (it = this->gaps; it != NULL; it = it->next) {
     gap = it->data;
     if (gap->filled > 0) {
-      ++this->early_discarded;
+      ++this->total_early_discarded;
     }
-    this->packet_losts += gap->total - gap->filled;
+    this->total_packet_losts += gap->total - gap->filled;
   }
 
   g_list_free_full (this->gaps, g_free);
@@ -251,13 +211,12 @@ mprtpr_path_get_packets (MPRTPRPath * this)
 
 
 guint32
-mprtpr_path_get_early_discarded_packets_num (MPRTPRPath * this)
+mprtpr_path_get_total_early_discarded_packets_num (MPRTPRPath * this)
 {
   guint32 result;
-  THIS_WRITELOCK (this);
-  result = this->early_discarded;
-  this->early_discarded = 0;
-  THIS_WRITEUNLOCK (this);
+  THIS_READLOCK (this);
+  result = this->total_early_discarded;
+  THIS_READUNLOCK (this);
   return result;
 }
 
@@ -390,11 +349,8 @@ mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer * buf,
 {
   GList *it;
   Gap *gap;
-//  guint64 reception_time;
-//  guint32 rtptime;
   GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
   guint payload_size;
-  guint packet_size;
   THIS_WRITELOCK (this);
 //  printf ("Packet is received by %d path receiver "
 //      "with %d relative sequence\n", this->id, subflow_sequence);
@@ -411,24 +367,18 @@ mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer * buf,
 
   //calculate lost, discarded and received packets
   ++this->packet_received;
-  ++this->packet_received_for_riports;
   if (0x8000 < this->HSN && subflow_sequence < 0x8000 &&
       this->received_since_cycle_is_increased > 0x8888) {
     this->received_since_cycle_is_increased = 0;
     ++this->cycle_num;
   }
-  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
-  payload_size = gst_rtp_buffer_get_payload_len (&rtp);
-  packet_size =
-      payload_size + gst_rtp_buffer_get_header_len (&rtp) +
-      (28 << 3) /*UDP size */ ;
-  this->avg_rtp_size += ((gfloat) packet_size - this->avg_rtp_size) * 1. / 16.;
-  this->received_payload_bytes += payload_size;
-  gst_rtp_buffer_unmap (&rtp);
 
   if (_cmp_seq (this->HSN, subflow_sequence) > 0) {
-    ++this->late_discarded;
-    this->late_discarded_bytes += payload_size;
+    ++this->total_late_discarded;
+    gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
+    payload_size = gst_rtp_buffer_get_payload_len (&rtp);
+    this->total_late_discarded_bytes += payload_size;
+    gst_rtp_buffer_unmap (&rtp);
     goto done;
   }
   if (subflow_sequence == (guint16) (this->actual_seq + 1)) {
@@ -451,7 +401,7 @@ mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer * buf,
     ++gap->filled;
     goto done;
   }
-  ++this->duplicated;
+  ++this->total_duplicated_packet_num;
 
 done:
   THIS_WRITEUNLOCK (this);

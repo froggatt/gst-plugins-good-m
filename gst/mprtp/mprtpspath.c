@@ -81,9 +81,7 @@ mprtps_path_reset (MPRTPSPath * this)
   this->state = MPRTPS_PATH_FLAG_ACTIVE |
       MPRTPS_PATH_FLAG_NON_CONGESTED | MPRTPS_PATH_FLAG_NON_LOSSY;
 
-  this->sent_packet_num = 0;
   this->total_sent_packet_num = 0;
-  this->sent_payload_bytes_sum = 0;
   this->total_sent_payload_bytes_sum = 0;
 }
 
@@ -266,16 +264,7 @@ mprtps_path_get_id (MPRTPSPath * this)
   return result;
 }
 
-guint32
-mprtps_path_get_sent_packet_num (MPRTPSPath * this)
-{
-  guint32 result;
-  THIS_WRITELOCK (this);
-  result = this->sent_packet_num;
-  this->sent_packet_num = 0;
-  THIS_WRITEUNLOCK (this);
-  return result;
-}
+
 
 guint32
 mprtps_path_get_total_sent_packet_num (MPRTPSPath * this)
@@ -284,18 +273,6 @@ mprtps_path_get_total_sent_packet_num (MPRTPSPath * this)
   THIS_WRITELOCK (this);
   result = this->total_sent_packet_num;
   this->total_sent_packet_num = 0;
-  THIS_WRITEUNLOCK (this);
-  return result;
-}
-
-
-guint32
-mprtps_path_get_sent_payload_bytes (MPRTPSPath * this)
-{
-  guint32 result;
-  THIS_WRITELOCK (this);
-  result = this->sent_payload_bytes_sum;
-  this->sent_payload_bytes_sum = 0;
   THIS_WRITEUNLOCK (this);
   return result;
 }
@@ -324,10 +301,8 @@ mprtps_path_process_rtp_packet (MPRTPSPath * this,
   }
   data.seq = this->seq;
 
-  ++(this->sent_packet_num);
   ++(this->total_sent_packet_num);
   payload_bytes = gst_rtp_buffer_get_payload_len (rtp);
-  this->sent_payload_bytes_sum += payload_bytes;
   this->total_sent_payload_bytes_sum += payload_bytes;
   gst_rtp_buffer_add_extension_onebyte_header (rtp, ext_header_id,
       (gpointer) & data, sizeof (data));

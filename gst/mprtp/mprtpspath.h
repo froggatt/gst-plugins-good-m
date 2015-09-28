@@ -60,9 +60,7 @@ struct _MPRTPSPath
   guint16   seq;
   guint16   cycle_num;
   guint8    state;
-  guint32   sent_packet_num;
   guint32   total_sent_packet_num;
-  guint32   sent_payload_bytes_sum;
   guint32   total_sent_payload_bytes_sum;
 
   GstClockTime  sent_passive;
@@ -91,10 +89,8 @@ gboolean mprtps_path_is_non_congested (MPRTPSPath * this);
 void mprtps_path_set_congested (MPRTPSPath * this);
 void mprtps_path_set_non_congested (MPRTPSPath * this);
 guint8 mprtps_path_get_id (MPRTPSPath * this);
-guint32 mprtps_path_get_sent_packet_num (MPRTPSPath * this);
 guint32 mprtps_path_get_total_sent_packet_num (MPRTPSPath * this);
 void mprtps_path_process_rtp_packet (MPRTPSPath * this, guint ext_header_id, GstRTPBuffer * rtp);
-guint32 mprtps_path_get_sent_payload_bytes (MPRTPSPath * this);
 guint32 mprtps_path_get_total_sent_payload_bytes (MPRTPSPath * this);
 MPRTPSPathState mprtps_path_get_state (MPRTPSPath * this);
 void mprtps_path_set_state (MPRTPSPath * this, MPRTPSPathState state);

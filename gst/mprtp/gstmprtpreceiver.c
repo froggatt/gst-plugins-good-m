@@ -36,6 +36,7 @@
 
 #include <gst/gst.h>
 #include <stdio.h>
+#include <string.h>
 #include "gstmprtpreceiver.h"
 #include "mprtpspath.h"
 #include "mprtprpath.h"
@@ -84,8 +85,7 @@ static void gst_mprtpreceiver_sink_unlink (GstPad * pad, GstObject * parent);
 static GstFlowReturn gst_mprtpreceiver_sink_chain (GstPad * pad,
     GstObject * parent, GstBuffer * buffer);
 
-static GstPad *_select_mprtcp_outpad (GstMprtpreceiver * this, GstBuffer * buf);
-
+GstFlowReturn _send_mprtcp_buffer (GstMprtpreceiver * this, GstBuffer * buf);
 enum
 {
   PROP_0,
@@ -97,21 +97,21 @@ static GstStaticPadTemplate gst_mprtpreceiver_sink_template =
 GST_STATIC_PAD_TEMPLATE ("sink_%u",
     GST_PAD_SINK,
     GST_PAD_REQUEST,
-    GST_STATIC_CAPS ("application/x-rtp")
+    GST_STATIC_CAPS ("ANY")
     );
 
 static GstStaticPadTemplate gst_mprtpreceiver_mprtcp_rr_src_template =
-    GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_src",
+GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
+    GST_STATIC_CAPS ("application/x-mprtcp-b")
     );
 
 static GstStaticPadTemplate gst_mprtpreceiver_mprtcp_sr_src_template =
-    GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_src",
+GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
+    GST_STATIC_CAPS ("application/x-mprtcp-b")
     );
 
 
@@ -463,7 +463,6 @@ gst_mprtpreceiver_sink_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   GstMapInfo map;
   PacketTypes packet_type;
   guint8 subflow_id;
-  GstPad *outpad;
 
   this = GST_MPRTPRECEIVER (parent);
   GST_DEBUG_OBJECT (this, "RTP/MPRTP/OTHER sink");
@@ -477,56 +476,67 @@ gst_mprtpreceiver_sink_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   packet_type = _get_packet_mptype (this, buf, &map, &subflow_id);
 
   if (packet_type == PACKET_IS_MPRTCP) {
-    outpad = _select_mprtcp_outpad (this, buf);
+    result = _send_mprtcp_buffer (this, buf);
+    gst_buffer_unmap (buf, &map);
   } else {
-    outpad = this->mprtp_srcpad;
+    gst_buffer_unmap (buf, &map);
+    result = gst_pad_push (this->mprtp_srcpad, buf);
   }
-  gst_buffer_unmap (buf, &map);
-  result = gst_pad_push (outpad, buf);
+
   THIS_READUNLOCK (this);
 exit:
   return result;
 }
 
-GstPad *
-_select_mprtcp_outpad (GstMprtpreceiver * this, GstBuffer * buf)
+
+GstFlowReturn
+_send_mprtcp_buffer (GstMprtpreceiver * this, GstBuffer * buf)
 {
-  GstPad *result;
+  GstFlowReturn result = GST_FLOW_OK;
+  GstPad *outpad;
   GstRTCPBuffer rtcp = { NULL, };
   GstRTCPHeader *block_header;
-  GstMPRTCPSubflowRiport *riport;
+  GstMPRTCPSubflowReport *riport;
   GstMPRTCPSubflowBlock *block;
   GstMPRTCPSubflowInfo *info;
   guint8 info_type;
-  guint16 subflow_id;
+  guint8 block_length;
   guint8 block_riport_type;
-  gboolean rr_riport = FALSE;
+  GstBuffer *buffer;
+  gpointer data;
+  gsize buf_length;
 
 
   if (G_UNLIKELY (!gst_rtcp_buffer_map (buf, GST_MAP_READ, &rtcp))) {
-    GST_WARNING_OBJECT (this, "The RTP packet is not readable");
-    return NULL;
+    GST_WARNING_OBJECT (this, "The RTCP packet is not readable");
+    return result;
   }
 
-  riport = (GstMPRTCPSubflowRiport *) gst_rtcp_get_first_header (&rtcp);
+  riport = (GstMPRTCPSubflowReport *) gst_rtcp_get_first_header (&rtcp);
   for (block = gst_mprtcp_get_first_block (riport);
       block != NULL; block = gst_mprtcp_get_next_block (riport, block)) {
     info = &block->info;
-    gst_mprtcp_block_getdown (info, &info_type, NULL, &subflow_id);
+    gst_mprtcp_block_getdown (info, &info_type, &block_length, NULL);
     if (info_type != 0) {
       continue;
     }
     block_header = &block->block_header;
     gst_rtcp_header_getdown (block_header, NULL, NULL, NULL,
         &block_riport_type, NULL, NULL);
-    if (block_riport_type == GST_RTCP_TYPE_RR ||
-        block_riport_type == GST_RTCP_TYPE_XR) {
-      rr_riport = TRUE;
-    }
 
+    buf_length = (block_length + 1) << 2;
+    data = g_malloc0 (buf_length);
+    memcpy (data, (gpointer) block, buf_length);
+    buffer = gst_buffer_new_wrapped (data, buf_length);
+    outpad = (block_riport_type == GST_RTCP_TYPE_SR) ? this->mprtcp_sr_srcpad
+        : this->mprtcp_rr_srcpad;
+
+    if ((result = gst_pad_push (outpad, buffer)) != GST_FLOW_OK) {
+      goto done;
+    }
   }
 
-  result = rr_riport ? this->mprtcp_rr_srcpad : this->mprtcp_sr_srcpad;
+done:
   return result;
 }
 

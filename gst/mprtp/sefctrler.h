@@ -38,7 +38,7 @@ struct _SndEventBasedController
   guint             subflow_num;
   gfloat            goodput_nc_sum;
   gfloat            goodput_c_sum;
-  gfloat            goodput_l_sum;
+  gfloat            goodput_mc_sum;
   gboolean          bids_recalc_requested;
   gboolean          bids_commit_requested;
   guint32           ssrc;
