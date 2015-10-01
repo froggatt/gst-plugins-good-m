@@ -41,7 +41,9 @@ typedef struct _Subflow Subflow;
 
 struct _Subflow
 {
+  guint8 id;
   MPRTPRPath *path;
+  guint32 received_packets;
 };
 
 //----------------------------------------------------------------------
@@ -116,6 +118,7 @@ stream_joiner_run (void *data)
   guint64 max_path_skew = 0;
   GstClockID clock_id;
   gboolean new_skew_added = FALSE;
+  gboolean stat_produce = FALSE;
 
   THIS_WRITELOCK (this);
   now = gst_clock_get_time (this->sysclock);
@@ -126,6 +129,7 @@ stream_joiner_run (void *data)
   }
   L = this->queued;
   this->queued = NULL;
+  stat_produce = GST_SECOND < now - this->last_stat_produce;
   g_hash_table_iter_init (&iter, this->subflows);
   while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
     //printf("key %u ---> %u\n", (guint8)*subflow_id, (MPRTPSPath*)*subflow);
@@ -135,7 +139,7 @@ stream_joiner_run (void *data)
 
     F = mprtpr_path_get_packets (path);
     F = g_list_reverse (F);
-
+    subflow->received_packets += g_list_length (F);
     L = _merge_lists (F, L);
     path_skew = mprtpr_path_get_packet_skew_median (path);
     if (path_skew > 0) {
@@ -147,6 +151,13 @@ stream_joiner_run (void *data)
         ++this->path_skew_counter;
       }
       new_skew_added = TRUE;
+    }
+
+    if (stat_produce) {
+      g_print ("On subflow %d received packet num is: %d\n",
+          subflow->id, subflow->received_packets);
+      subflow->received_packets = 0;
+      this->last_stat_produce = now;
     }
   }
 
@@ -317,6 +328,8 @@ make_subflow (MPRTPRPath * path)
 {
   Subflow *result = g_malloc0 (sizeof (Subflow));
   result->path = path;
+  result->id = mprtpr_path_get_id (path);
+  result->received_packets = 0;
   return result;
 }
 

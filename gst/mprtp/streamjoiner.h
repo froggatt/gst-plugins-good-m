@@ -45,7 +45,7 @@ struct _StreamJoiner
   void            (*send_mprtp_packet_func)(gpointer,GstBuffer*);
   gpointer          send_mprtp_packet_data;
 
-
+  GstClockTime      last_stat_produce;
 };
 
 struct _StreamJoinerClass{
