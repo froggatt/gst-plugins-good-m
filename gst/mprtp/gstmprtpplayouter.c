@@ -100,6 +100,7 @@ enum
   PROP_DETACH_SUBFLOW,
   PROP_PIVOT_CLOCK_RATE,
   PROP_AUTO_FLOW_RIPORTING,
+  PROP_RTP_PASSTHROUGH,
 };
 
 /* pad templates */
@@ -116,7 +117,7 @@ static GstStaticPadTemplate gst_mprtpplayouter_mprtcp_sr_sink_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp-b")
+    GST_STATIC_CAPS ("application/x-rtcp")
     );
 
 static GstStaticPadTemplate gst_mprtpplayouter_mprtp_src_template =
@@ -131,7 +132,7 @@ static GstStaticPadTemplate gst_mprtpplayouter_mprtcp_rr_src_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp")
+    GST_STATIC_CAPS ("application/x-rtcp")
     );
 
 
@@ -200,6 +201,13 @@ gst_mprtpplayouter_class_init (GstMprtpplayouterClass * klass)
           "riports.", FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
 
+  g_object_class_install_property (gobject_class, PROP_RTP_PASSTHROUGH,
+      g_param_spec_boolean ("rtp-passthrough",
+          "Indicate the passthrough mode on no active subflow case",
+          "Indicate weather the schdeuler let the packets travel "
+          "through the element if it hasn't any active subflow.",
+          TRUE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
 
   element_class->change_state =
       GST_DEBUG_FUNCPTR (gst_mprtpplayouter_change_state);
@@ -240,6 +248,8 @@ gst_mprtpplayouter_init (GstMprtpplayouter * this)
   gst_pad_set_event_function (this->mprtp_sinkpad,
       GST_DEBUG_FUNCPTR (gst_mprtpplayouter_sink_event));
 
+  this->rtp_passthrough = TRUE;
+  this->riport_flow_signal_sent = FALSE;
   this->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   this->pivot_clock_rate = MPRTP_PLAYOUTER_DEFAULT_CLOCKRATE;
   this->pivot_ssrc = MPRTP_PLAYOUTER_DEFAULT_SSRC;
@@ -307,6 +317,12 @@ gst_mprtpplayouter_set_property (GObject * object, guint property_id,
       _detach_path (this, g_value_get_uint (value));
       THIS_WRITEUNLOCK (this);
       break;
+    case PROP_RTP_PASSTHROUGH:
+      THIS_WRITELOCK (this);
+      gboolean_value = g_value_get_boolean (value);
+      this->rtp_passthrough = gboolean_value;
+      THIS_WRITEUNLOCK (this);
+      break;
     case PROP_AUTO_FLOW_RIPORTING:
       THIS_WRITELOCK (this);
       gboolean_value = g_value_get_boolean (value);
@@ -349,6 +365,11 @@ gst_mprtpplayouter_get_property (GObject * object, guint property_id,
       g_value_set_boolean (value, this->auto_flow_riporting);
       THIS_READUNLOCK (this);
       break;
+    case PROP_RTP_PASSTHROUGH:
+      THIS_READLOCK (this);
+      g_value_set_boolean (value, this->rtp_passthrough);
+      THIS_READUNLOCK (this);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -368,7 +389,6 @@ gst_mprtpplayouter_sink_query (GstPad * sinkpad, GstObject * parent,
       result = gst_pad_peer_query (this->mprtp_srcpad, query);
       break;
   }
-
   return result;
 }
 
@@ -653,13 +673,16 @@ _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
     GST_WARNING_OBJECT (this, "The received Buffer is not readable");
     return;
   }
-
+//gst_print_rtp_packet_info(&rtp);
   if (!gst_rtp_buffer_get_extension (&rtp)) {
     //Backward compatibility in a way to process rtp packet must be implemented here!!!
 
     GST_WARNING_OBJECT (this,
         "The received buffer extension bit is 0 thus it is not an MPRTP packet.");
     gst_rtp_buffer_unmap (&rtp);
+    if (this->rtp_passthrough) {
+      gst_mprtpplayouter_send_mprtp_proxy (this, buf);
+    }
     return;
   }
   //_print_rtp_packet_info(rtp);

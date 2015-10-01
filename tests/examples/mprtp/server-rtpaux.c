@@ -362,6 +362,7 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
 
   g_object_set (mprtpsch, "join-subflow", 1, NULL);
   g_object_set (mprtpsch, "join-subflow", 2, NULL);
+  g_object_set (mprtprcv, "report-only", TRUE, NULL);
 
 
   padName = g_strdup_printf ("send_rtcp_src_%u", session->sessionNum);

@@ -45,6 +45,7 @@ struct _GstMprtpplayouter
   guint32 pivot_ssrc;
   guint32 pivot_clock_rate;
   gboolean auto_flow_riporting;
+  gboolean rtp_passthrough;
 
   GstPad *mprtp_srcpad;
   GstPad *mprtp_sinkpad;

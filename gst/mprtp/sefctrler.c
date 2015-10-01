@@ -27,6 +27,7 @@
 #include "streamsplitter.h"
 #include "gstmprtcpbuffer.h"
 #include <math.h>
+#include <string.h>
 
 #define THIS_READLOCK(this) g_rw_lock_reader_lock(&this->rwmutex)
 #define THIS_READUNLOCK(this) g_rw_lock_reader_unlock(&this->rwmutex)
@@ -209,7 +210,7 @@ sefctrler_run (void *data)
   GstBuffer *buf;
   GstClockID clock_id;
   gpointer dataptr;
-  GstMPRTCPSubflowBlock *block;
+  GstMPRTCPSubflowBlock block;
   GstRTCPSR *sr;
   guint8 block_length;
   guint16 length;
@@ -229,20 +230,21 @@ sefctrler_run (void *data)
       continue;
     }
 
-
-    dataptr = g_malloc0 (1400);
-    block = (GstMPRTCPSubflowBlock *) dataptr;
-    gst_mprtcp_block_init (block);
-    sr = gst_mprtcp_riport_block_add_sr (block);
-    _setup_sr_riport (subflow, sr, this->ssrc);
-    gst_rtcp_header_getdown (&sr->header, NULL, NULL, NULL, NULL, &length,
-        NULL);
-    block_length = (guint8) length + 1;
-    gst_mprtcp_block_setup (&block->info, MPRTCP_BLOCK_TYPE_RIPORT,
-        block_length, (guint16) subflow->id);
-    buf = gst_buffer_new_wrapped (dataptr, (block_length + 1) << 2);
-    this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
-
+    if (this->riport_is_flowable) {
+      gst_mprtcp_block_init (&block);
+      sr = gst_mprtcp_riport_block_add_sr (&block);
+      _setup_sr_riport (subflow, sr, this->ssrc);
+      gst_rtcp_header_getdown (&sr->header, NULL, NULL, NULL, NULL, &length,
+          NULL);
+      block_length = (guint8) length + 1;
+      gst_mprtcp_block_setup (&block.info, MPRTCP_BLOCK_TYPE_RIPORT,
+          block_length, (guint16) subflow->id);
+      length = (block_length + 1) << 2;
+      dataptr = g_malloc0 (length);
+      memcpy (dataptr, &block, length);
+      buf = gst_buffer_new_wrapped (dataptr, length);
+      this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
+    }
 
     path_state = mprtps_path_get_state (path);
     switch (path_state) {
@@ -502,7 +504,7 @@ guint32
 _uint32_diff (guint32 start, guint32 end)
 {
   if (start <= end) {
-    return start - end;
+    return end - start;
   }
   return ~((guint32) (start - end));
 }
@@ -512,7 +514,7 @@ guint16
 _uint16_diff (guint16 start, guint16 end)
 {
   if (start <= end) {
-    return start - end;
+    return end - start;
   }
   return ~((guint16) (start - end));
 }
@@ -735,7 +737,7 @@ _fire (SndEventBasedController * this, Subflow * subflow, Event event)
   MPRTPSPathState path_state;
   path = subflow->path;
   path_state = mprtps_path_get_state (path);
-
+  //g_print("FIRE->%d:%d\n", subflow->id, event);
   //passive state
   if (path_state == MPRTPS_PATH_STATE_PASSIVE) {
     switch (event) {
@@ -962,8 +964,8 @@ _setup_sr_riport (Subflow * this, GstRTCPSR * sr, guint32 ssrc)
   path = this->path;
 
   this->actual_packet_count = mprtps_path_get_total_sent_packet_num (path);
-  packet_count = _uint32_diff (this->actual_packet_count,
-      this->last_packet_count_for_sr);
+  packet_count = _uint32_diff (this->last_packet_count_for_sr,
+      this->actual_packet_count);
 
   this->last_packet_count_for_sr = this->actual_packet_count;
 
@@ -972,6 +974,7 @@ _setup_sr_riport (Subflow * this, GstRTCPSR * sr, guint32 ssrc)
   payload_bytes =
       _uint32_diff (this->last_payload_bytes_for_sr,
       this->actual_sent_payload_bytes);
+
   this->last_payload_bytes_for_sr = this->actual_sent_payload_bytes;
 
   gst_rtcp_srb_setup (&sr->sender_block, ntptime, rtptime,

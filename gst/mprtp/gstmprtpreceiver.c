@@ -89,7 +89,9 @@ GstFlowReturn _send_mprtcp_buffer (GstMprtpreceiver * this, GstBuffer * buf);
 enum
 {
   PROP_0,
+  PROP_REPORT_ONLY,
 };
+
 
 /* pad templates */
 
@@ -104,14 +106,14 @@ static GstStaticPadTemplate gst_mprtpreceiver_mprtcp_rr_src_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp-b")
+    GST_STATIC_CAPS ("application/x-rtcp")
     );
 
 static GstStaticPadTemplate gst_mprtpreceiver_mprtcp_sr_src_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp-b")
+    GST_STATIC_CAPS ("application/x-rtcp")
     );
 
 
@@ -150,12 +152,17 @@ gst_mprtpreceiver_class_init (GstMprtpreceiverClass * klass)
       "FIXME Long name", "Generic", "FIXME Description",
       "FIXME <fixme@example.com>");
 
-
-
   gobject_class->set_property = gst_mprtpreceiver_set_property;
   gobject_class->get_property = gst_mprtpreceiver_get_property;
   gobject_class->dispose = gst_mprtpreceiver_dispose;
   gobject_class->finalize = gst_mprtpreceiver_finalize;
+
+  g_object_class_install_property (gobject_class, PROP_REPORT_ONLY,
+      g_param_spec_boolean ("report-only",
+          "Indicate weather the receiver only receive reports on its subflows",
+          "Indicate weather the receiver only receive reports on its subflows",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   element_class->request_new_pad =
       GST_DEBUG_FUNCPTR (gst_mprtpreceiver_request_new_pad);
   element_class->release_pad =
@@ -189,6 +196,8 @@ gst_mprtpreceiver_init (GstMprtpreceiver * mprtpreceiver)
       mprtpreceiver->mprtp_srcpad);
 
   g_rw_lock_init (&mprtpreceiver->rwmutex);
+
+  mprtpreceiver->only_report_receiving = FALSE;
 }
 
 void
@@ -199,7 +208,11 @@ gst_mprtpreceiver_set_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "set_property");
 
   switch (property_id) {
-
+    case PROP_REPORT_ONLY:
+      THIS_WRITELOCK (this);
+      this->only_report_receiving = g_value_get_boolean (value);
+      THIS_WRITEUNLOCK (this);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -210,11 +223,16 @@ void
 gst_mprtpreceiver_get_property (GObject * object, guint property_id,
     GValue * value, GParamSpec * pspec)
 {
-  GstMprtpreceiver *mprtpreceiver = GST_MPRTPRECEIVER (object);
+  GstMprtpreceiver *this = GST_MPRTPRECEIVER (object);
 
-  GST_DEBUG_OBJECT (mprtpreceiver, "get_property");
+  GST_DEBUG_OBJECT (this, "get_property");
 
   switch (property_id) {
+    case PROP_REPORT_ONLY:
+      THIS_READLOCK (this);
+      g_value_set_boolean (value, this->only_report_receiving);
+      THIS_READUNLOCK (this);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -316,18 +334,28 @@ gst_mprtpreceiver_sink_event (GstPad * pad, GstObject * parent,
   GstPad *peer;
 
   GST_DEBUG_OBJECT (this, "sink event");
-  g_print ("EVENT to the sink: %s\n", GST_EVENT_TYPE_NAME (event));
   switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_SEGMENT:
+    case GST_EVENT_SEGMENT_DONE:
+    case GST_EVENT_EOS:
+    case GST_EVENT_FLUSH_START:
+    case GST_EVENT_FLUSH_STOP:
+    case GST_EVENT_LATENCY:
+    case GST_EVENT_STREAM_START:
+      if (this->only_report_receiving) {
+        goto done;
+      }
     default:
       if (gst_pad_is_linked (this->mprtp_srcpad)) {
         peer = gst_pad_get_peer (this->mprtp_srcpad);
         result = gst_pad_send_event (peer, event);
         gst_object_unref (peer);
       }
+      g_print ("EVENT to the sink: %s", GST_EVENT_TYPE_NAME (event));
       result = gst_pad_event_default (pad, parent, event);
       break;
   }
-
+done:
   return result;
 }
 

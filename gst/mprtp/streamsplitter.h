@@ -46,6 +46,8 @@ struct _StreamSplitter
   GstClock*        sysclock;
   GstTask*         thread;
   GRecMutex        thread_mutex;
+
+  guint8           active_subflow_num;
 };
 
 struct _StreamSplitterClass{
@@ -55,7 +57,7 @@ struct _StreamSplitterClass{
 //class functions
 void stream_splitter_add_path(StreamSplitter * this, guint8 subflow_id, MPRTPSPath *path);
 void stream_splitter_rem_path(StreamSplitter * this, guint8 subflow_id);
-void stream_splitter_process_rtp_packet(StreamSplitter* this, GstRTPBuffer* rtp);
+gboolean stream_splitter_process_rtp_packet(StreamSplitter* this, GstRTPBuffer* rtp);
 void stream_splitter_set_rtp_ext_header_id(StreamSplitter* this, guint8 ext_header_id);
 void stream_splitter_setup_sending_bid(StreamSplitter* this, guint8 subflow_id, guint32 bid);
 void stream_splitter_commit_changes(StreamSplitter *this);

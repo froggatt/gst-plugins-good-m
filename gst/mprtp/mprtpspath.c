@@ -270,10 +270,9 @@ guint32
 mprtps_path_get_total_sent_packet_num (MPRTPSPath * this)
 {
   guint32 result;
-  THIS_WRITELOCK (this);
+  THIS_READLOCK (this);
   result = this->total_sent_packet_num;
-  this->total_sent_packet_num = 0;
-  THIS_WRITEUNLOCK (this);
+  THIS_READUNLOCK (this);
   return result;
 }
 

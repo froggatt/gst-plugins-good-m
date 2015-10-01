@@ -28,6 +28,7 @@
 #include "gstmprtcpbuffer.h"
 #include "mprtprpath.h"
 #include <math.h>
+#include <string.h>
 
 #define THIS_READLOCK(this) g_rw_lock_reader_lock(&this->rwmutex)
 #define THIS_READUNLOCK(this) g_rw_lock_reader_unlock(&this->rwmutex)
@@ -75,7 +76,9 @@ struct _Subflow
 
 static void refctrler_finalize (GObject * object);
 static void refctrler_run (void *data);
-void _send_mprtcp_blocks (RcvEventBasedController * this, Subflow * subflow);
+void _send_mprtcp_xr_block (RcvEventBasedController * this, Subflow * subflow);
+void _send_mprtcp_rr_block (RcvEventBasedController * this, Subflow * subflow);
+
 void _setup_xr_rfc2743_late_discarded_riport (Subflow * this,
     GstRTCPXR_RFC7243 * xr, guint32 ssrc);
 void _setup_rr_riport (Subflow * this, GstRTCPRR * rr, guint32 ssrc);
@@ -169,8 +172,14 @@ refctrler_run (void *data)
     subflow->actual_total_lost_packet_num =
         mprtpr_path_get_total_packet_losts_num (path);
 
-    _send_mprtcp_blocks (this, subflow);
+    if (this->riport_is_flowable) {
+      _send_mprtcp_rr_block (this, subflow);
 
+      if (subflow->actual_total_late_discarded_bytes !=
+          subflow->last_total_late_discarded_bytes) {
+        _send_mprtcp_xr_block (this, subflow);
+      }
+    }
     subflow->last_total_late_discarded_bytes =
         subflow->actual_total_late_discarded_bytes;
     subflow->last_total_lost_packet_num = subflow->actual_total_lost_packet_num;
@@ -385,48 +394,54 @@ _uint16_diff (guint16 a, guint16 b)
 }
 
 void
-_send_mprtcp_blocks (RcvEventBasedController * this, Subflow * subflow)
+_send_mprtcp_rr_block (RcvEventBasedController * this, Subflow * subflow)
 {
-  GstMPRTCPSubflowBlock *block;
+  GstMPRTCPSubflowBlock block;
   GstRTCPRR *rr;
+  gpointer dataptr;
+  guint16 length;
+  guint8 block_length;
+  GstBuffer *buf;
+
+  gst_mprtcp_block_init (&block);
+  rr = gst_mprtcp_riport_block_add_rr (&block);
+  _setup_rr_riport (subflow, rr, this->ssrc);
+  gst_rtcp_header_getdown (&rr->header, NULL, NULL, NULL, NULL, &length, NULL);
+  block_length = (guint8) length + 1;
+  gst_mprtcp_block_setup (&block.info, MPRTCP_BLOCK_TYPE_RIPORT, block_length,
+      (guint16) subflow->id);
+  length = (block_length + 1) << 2;
+  dataptr = g_malloc0 (length);
+  memcpy (dataptr, &block, length);
+  buf = gst_buffer_new_wrapped (dataptr, length);
+  this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
+}
+
+
+void
+_send_mprtcp_xr_block (RcvEventBasedController * this, Subflow * subflow)
+{
+  GstMPRTCPSubflowBlock block;
   GstRTCPXR_RFC7243 *xr;
   gpointer dataptr;
   guint16 length;
   guint8 block_length;
   GstBuffer *buf;
 
-  dataptr = g_malloc0 (1400);
-  block = (GstMPRTCPSubflowBlock *) dataptr;
-  gst_mprtcp_block_init (block);
-  rr = gst_mprtcp_riport_block_add_rr (block);
-  _setup_rr_riport (subflow, rr, this->ssrc);
-  gst_rtcp_header_getdown (&rr->header, NULL, NULL, NULL, NULL, &length, NULL);
-  block_length = (guint8) length + 1;
-  gst_mprtcp_block_setup (&block->info, MPRTCP_BLOCK_TYPE_RIPORT, block_length,
-      (guint16) subflow->id);
-  buf = gst_buffer_new_wrapped (dataptr, (block_length + 1) << 2);
-  this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
-
-  if (subflow->last_total_late_discarded_bytes ==
-      subflow->actual_total_late_discarded_bytes) {
-    goto done;
-  }
-
-  dataptr = g_malloc0 (1400);
-  block = (GstMPRTCPSubflowBlock *) dataptr;
-  gst_mprtcp_block_init (block);
-  xr = gst_mprtcp_riport_block_add_xr_rfc2743 (block);
+  gst_mprtcp_block_init (&block);
+  xr = gst_mprtcp_riport_block_add_xr_rfc2743 (&block);
   _setup_xr_rfc2743_late_discarded_riport (subflow, xr, this->ssrc);
   gst_rtcp_header_getdown (&xr->header, NULL, NULL, NULL, NULL, &length, NULL);
   block_length = (guint8) length + 1;
-  gst_mprtcp_block_setup (&block->info, MPRTCP_BLOCK_TYPE_RIPORT, block_length,
+  gst_mprtcp_block_setup (&block.info, MPRTCP_BLOCK_TYPE_RIPORT, block_length,
       (guint16) subflow->id);
-  buf = gst_buffer_new_wrapped (dataptr, (block_length + 1) << 2);
+  length = (block_length + 1) << 2;
+  dataptr = g_malloc0 (length);
+  memcpy (dataptr, &block, length);
+  buf = gst_buffer_new_wrapped (dataptr, length);
   this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
-
-done:
-  return;
 }
+
 
 
 void
@@ -527,7 +542,7 @@ guint32
 _uint32_diff (guint32 start, guint32 end)
 {
   if (start <= end) {
-    return start - end;
+    return end - start;
   }
   return ~((guint32) (start - end));
 }

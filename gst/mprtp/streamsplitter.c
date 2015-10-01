@@ -84,7 +84,17 @@ static void stream_splitter_run (void *data);
 
 static Subflow *make_subflow (MPRTPSPath * path);
 
-
+//void _print_tree(SchNode* node, gint top, gint level)
+//{
+//  gint i;
+//  if(node == NULL){
+//    return;
+//  }
+//  for(i = 0; i < level; ++i) g_print("--");
+//  g_print("%p (%d)\n", node->path, top>>level);
+//  _print_tree(node->left, top, level+1);
+//  _print_tree(node->right, top, level+1);
+//}
 //----------------------------------------------------------------------
 //---- Private function implementations to Stream Dealer object --------
 //----------------------------------------------------------------------
@@ -119,13 +129,15 @@ stream_splitter_init (StreamSplitter * this)
   this->new_path_added = FALSE;
   this->changes_are_committed = FALSE;
   this->path_is_removed = FALSE;
+  this->sysclock = gst_system_clock_obtain ();
+  this->active_subflow_num = 0;
+
   g_rw_lock_init (&this->rwmutex);
   g_rec_mutex_init (&this->thread_mutex);
   this->thread = gst_task_new (stream_splitter_run, this, NULL);
   gst_task_set_lock (this->thread, &this->thread_mutex);
   gst_task_start (this->thread);
 
-  this->sysclock = gst_system_clock_obtain ();
   this->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   this->subflows = g_hash_table_new_full (NULL, NULL, NULL, g_free);
   this->charge_value = 1;
@@ -210,14 +222,16 @@ stream_splitter_commit_changes (StreamSplitter * this)
 }
 
 //Here the buffer must be writeable and must be rtp
-void
+gboolean
 stream_splitter_process_rtp_packet (StreamSplitter * this, GstRTPBuffer * rtp)
 {
   MPRTPSPath *path;
+  gboolean result = TRUE;
   THIS_WRITELOCK (this);
   if (this->keyframes_tree == NULL || this->full_tree == NULL) {
     //vagy várni egy kis ideig....
     GST_WARNING_OBJECT (this, "no appropiate tree exists for distributing");
+    result = FALSE;
     goto done;
   }
 
@@ -231,6 +245,7 @@ stream_splitter_process_rtp_packet (StreamSplitter * this, GstRTPBuffer * rtp)
   mprtps_path_process_rtp_packet (path, this->ext_header_id, rtp);
 done:
   THIS_WRITEUNLOCK (this);
+  return result;
 }
 
 void
@@ -252,7 +267,6 @@ stream_splitter_run (void *data)
   now = gst_clock_get_time (this->sysclock);
 
   THIS_WRITELOCK (this);
-
 
   if (!this->new_path_added &&
       !this->path_is_removed && !this->changes_are_committed) {
@@ -301,15 +315,15 @@ stream_splitter_run (void *data)
     } else if (path_state == MPRTPS_PATH_STATE_MIDDLY_CONGESTED) {
       bid_l_sum += subflow->actual_bid;
     }
-    //debug printing
-#ifdef DEBUG_DATA_ON
     subflow->actual_total_sent_packet_num =
         mprtps_path_get_total_sent_packet_num (path);
+    //debug printing
+#ifdef DEBUG_DATA_ON
     g_print ("%p,subflow %d,%d\n", this, mprtps_path_get_id (path),
         subflow->actual_total_sent_packet_num -
         subflow->last_total_sent_packet_num);
-    subflow->last_total_sent_packet_num = subflow->actual_total_sent_packet_num;
 #endif
+    subflow->last_total_sent_packet_num = subflow->actual_total_sent_packet_num;
   }
 
   _full_tree_commit (this, bid_total_sum);
@@ -329,8 +343,12 @@ stream_splitter_run (void *data)
   this->changes_are_committed = FALSE;
 
 done:
-  rand = g_random_double ();
-  next_scheduler_time = now + GST_SECOND * (0.5 + rand);
+  if (this->active_subflow_num > 0) {
+    rand = g_random_double ();
+    next_scheduler_time = now + GST_SECOND * (0.5 + rand);
+  } else {
+    next_scheduler_time = now + GST_MSECOND * 10;
+  }
   GST_DEBUG_OBJECT (this, "Next scheduling interval time is %lu",
       next_scheduler_time);
   clock_id = gst_clock_new_single_shot_id (this->sysclock, next_scheduler_time);
@@ -379,6 +397,7 @@ _full_tree_commit (StreamSplitter * this, guint32 bid_sum)
   Subflow *subflow;
   gpointer val, key;
   GHashTableIter iter;
+  guint8 active_subflow_num = 0;
   //guint8 subflow_id;
 
   g_hash_table_iter_init (&iter, this->subflows);
@@ -391,7 +410,7 @@ _full_tree_commit (StreamSplitter * this, guint32 bid_sum)
       largest_bid = subflow->actual_bid;
       path_with_largest_bid = path;
     }
-
+    ++active_subflow_num;
     actual_value =
         (gdouble) subflow->actual_bid /
         (gdouble) bid_sum *(gdouble) SCHTREE_MAX_VALUE;
@@ -399,7 +418,7 @@ _full_tree_commit (StreamSplitter * this, guint32 bid_sum)
     _schtree_insert (&new_root, path, &insert_value, SCHTREE_MAX_VALUE);
   }
 
-
+  this->active_subflow_num = active_subflow_num;
   //check 128 integrity
   _schnode_overlap_trees (this->full_tree, new_root);
   _schnode_rdtor (this->full_tree);

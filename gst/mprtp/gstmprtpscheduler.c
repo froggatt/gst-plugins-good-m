@@ -110,6 +110,7 @@ enum
   PROP_SET_SUBFLOW_CONGESTED,
   PROP_AUTO_FLOW_CONTROLLING,
   PROP_SET_SENDING_BID,
+  PROP_RTP_PASSTHROUGH,
 };
 
 /* pad templates */
@@ -134,16 +135,16 @@ static GstStaticPadTemplate gst_mprtpscheduler_mprtcp_rr_sink_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp-b")
-    );
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 
 static GstStaticPadTemplate gst_mprtpscheduler_mprtcp_sr_src_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp")
-    );
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 
 /* class initialization */
@@ -233,6 +234,13 @@ gst_mprtpscheduler_class_init (GstMprtpschedulerClass * klass)
           "sender riports.",
           FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_RTP_PASSTHROUGH,
+      g_param_spec_boolean ("rtp-passthrough",
+          "Indicate the passthrough mode on no active subflow case",
+          "Indicate weather the schdeuler let the packets travel "
+          "through the element if it hasn't any active subflow.",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_SET_SENDING_BID,
       g_param_spec_uint ("setup-sending-bid",
           "set the sending bid for a subflow",
@@ -293,6 +301,7 @@ gst_mprtpscheduler_init (GstMprtpscheduler * this)
   this->alpha_value = MPRTP_SENDER_DEFAULT_ALPHA_VALUE;
   this->beta_value = MPRTP_SENDER_DEFAULT_BETA_VALUE;
   this->gamma_value = MPRTP_SENDER_DEFAULT_GAMMA_VALUE;
+  this->rtp_passthrough = TRUE;
 
   g_rw_lock_init (&this->rwmutex);
   this->paths = g_hash_table_new_full (NULL, NULL, NULL, g_free);
@@ -389,6 +398,12 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
       _change_auto_flow_controlling_mode (this, gboolean_value);
       THIS_WRITEUNLOCK (this);
       break;
+    case PROP_RTP_PASSTHROUGH:
+      THIS_WRITELOCK (this);
+      gboolean_value = g_value_get_boolean (value);
+      this->rtp_passthrough = gboolean_value;
+      THIS_WRITEUNLOCK (this);
+      break;
     case PROP_SET_SENDING_BID:
       THIS_WRITELOCK (this);
       guint_value = g_value_get_uint (value);
@@ -438,6 +453,11 @@ gst_mprtpscheduler_get_property (GObject * object, guint property_id,
     case PROP_AUTO_FLOW_CONTROLLING:
       THIS_READLOCK (this);
       g_value_set_boolean (value, this->flow_controlling_mode);
+      THIS_READUNLOCK (this);
+      break;
+    case PROP_RTP_PASSTHROUGH:
+      THIS_READLOCK (this);
+      g_value_set_boolean (value, this->rtp_passthrough);
       THIS_READUNLOCK (this);
       break;
     default:
@@ -589,7 +609,6 @@ gst_mprtpscheduler_rtp_sink_chain (GstPad * pad, GstObject * parent,
   guint8 first_byte;
 
   this = GST_MPRTPSCHEDULER (parent);
-
   if (gst_buffer_extract (buffer, 0, &first_byte, 1) != 1) {
     GST_WARNING_OBJECT (this, "could not extract first byte from buffer");
     gst_buffer_unref (buffer);
@@ -601,22 +620,32 @@ gst_mprtpscheduler_rtp_sink_chain (GstPad * pad, GstObject * parent,
     return gst_pad_push (this->mprtp_srcpad, buffer);
   }
   //the packet is rtp
+
   outbuf = gst_buffer_make_writable (buffer);
+
   if (G_UNLIKELY (!gst_rtp_buffer_map (outbuf, GST_MAP_READWRITE, &rtp))) {
     GST_WARNING_OBJECT (this, "The RTP packet is not writeable");
-    return GST_FLOW_ERROR;
+    return GST_FLOW_CUSTOM_ERROR;
   }
   THIS_READLOCK (this);
-  stream_splitter_process_rtp_packet (this->splitter, &rtp);
 
-  //gst_print_rtp_packet_info(&rtp);
+  if (!stream_splitter_process_rtp_packet (this->splitter, &rtp)
+      && !this->rtp_passthrough) {
+    GST_WARNING_OBJECT (this,
+        "The stream can not be passed through due to"
+        " element regulations and lack of the active subflows");
+    gst_rtp_buffer_unmap (&rtp);
+    gst_buffer_unref (buffer);
+    result = GST_FLOW_CUSTOM_ERROR;
+    goto done;
+  }
   gst_rtp_buffer_unmap (&rtp);
   result = gst_pad_push (this->mprtp_srcpad, outbuf);
   if (!this->riport_flow_signal_sent) {
     this->riport_flow_signal_sent = TRUE;
     this->riport_can_flow (this->controller);
   }
-
+done:
   THIS_READUNLOCK (this);
 
   GST_DEBUG_OBJECT (this, "chain is unlocked");

@@ -54,9 +54,6 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpsender_debug_category);
 #define PACKET_IS_RTCP(b) (b > 192 && b < 223)
 
 
-static void _merge_sr_blocks (GstRTCPSR * src, GstRTCPSR * dst);
-static void _merge_rr_blocks (GstRTCPRR * src, GstRTCPRR * dst);
-static void _merge_xr_blocks (GstRTCPXR_RFC7243 * src, GstRTCPXR_RFC7243 * dst);
 static void gst_mprtpsender_set_property (GObject * object,
     guint property_id, const GValue * value, GParamSpec * pspec);
 static void gst_mprtpsender_get_property (GObject * object,
@@ -82,6 +79,7 @@ static GstFlowReturn gst_mprtpsender_mprtp_sink_chain (GstPad * pad,
 static GstFlowReturn
 gst_mprtpsender_mprtcp_sink_chain (GstPad * pad, GstObject * parent,
     GstBuffer * buf);
+
 static gboolean gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad,
     GstObject * parent, GstEvent * event);
 
@@ -91,7 +89,11 @@ typedef struct
   guint8 state;
   guint8 id;
 
-  GstBuffer *report_buf;
+  //GstBuffer *report_buf;
+  GstBuffer *buf_report_rr;
+  GstBuffer *buf_report_sr;
+  GstBuffer *buf_report_xr;
+
   gboolean report_started;
   GstClockTime report_interval_time;
   GstClockTime report_time;
@@ -101,9 +103,18 @@ typedef struct
 } Subflow;
 
 static gboolean _do_subflow_report_now (Subflow * this, gboolean urgent);
-static void _add_report (Subflow * this, GstMPRTCPSubflowBlock * block);
-static gboolean _is_block_urgent_to_send (Subflow * subflow,
+static void _merge_xr_riports (Subflow * this, GstRTCPXR_RFC7243 * new_xr);
+static void _merge_sr_riports (Subflow * this, GstRTCPSRBlock * new_sr);
+static void _merge_rr_riports (Subflow * this, GstRTCPRRBlock * new_rr);
+static gboolean _process_xr_rfc7243_report (Subflow * this, GstBuffer * buf,
     GstMPRTCPSubflowBlock * block);
+static gboolean _process_sr_report (Subflow * this, GstBuffer * buf,
+    GstMPRTCPSubflowBlock * block);
+static gboolean _process_rr_report (Subflow * this, GstBuffer * buf,
+    GstMPRTCPSubflowBlock * block);
+static gboolean _process_report (GstMprtpsender * this, GstBuffer * buf,
+    Subflow ** subflow, gboolean * urgent);
+static GstBuffer *_assemble_report (Subflow * this);
 
 static gboolean
 _select_subflow (GstMprtpsender * this, guint8 id, Subflow ** result);
@@ -120,8 +131,7 @@ static GstStaticPadTemplate gst_mprtpsender_src_template =
 GST_STATIC_PAD_TEMPLATE ("src_%u",
     GST_PAD_SRC,
     GST_PAD_REQUEST,
-    GST_STATIC_CAPS ("ANY")
-    );
+    GST_STATIC_CAPS_ANY);
 
 
 static GstStaticPadTemplate gst_mprtpsender_mprtp_sink_template =
@@ -135,15 +145,15 @@ static GstStaticPadTemplate gst_mprtpsender_mprtcp_rr_sink_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp-b")
-    );
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 static GstStaticPadTemplate gst_mprtpsender_mprtcp_sr_sink_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-mprtcp-b")
-    );
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 /* class initialization */
 
@@ -603,7 +613,6 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
     goto done;
   }
   packet_type = _get_packet_mptype (this, buf, &map, &subflow_id);
-
   if (packet_type != PACKET_IS_NOT_MP &&
       _select_subflow (this, subflow_id, &subflow) != FALSE) {
     outpad = subflow->outpad;
@@ -613,7 +622,7 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
     outpad = this->pivot_outpad;
   } else {
     if (n > 1) {
-      r = g_random_int_range (0, n - 1);
+      r = g_random_int_range (0, n);
       subflow = g_list_nth (this->subflows, r)->data;
       outpad = subflow->outpad;
     } else {
@@ -621,197 +630,252 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
       outpad = subflow->outpad;
     }
   }
-
   gst_buffer_unmap (buf, &map);
   result = gst_pad_push (outpad, buf);
 done:
   THIS_READUNLOCK (this);
 exit:
   return result;
+
 }
+
 
 static GstFlowReturn
 gst_mprtpsender_mprtcp_sink_chain (GstPad * pad, GstObject * parent,
     GstBuffer * buf)
 {
   GstMprtpsender *this;
-  GstFlowReturn result;
-  guint16 subflow_id;
-  Subflow *subflow;
-  GstMapInfo map = GST_MAP_INFO_INIT;
-  GstMPRTCPSubflowBlock *block;
-  gboolean urgent;
-  guint8 block_type;
-
+  GstFlowReturn result = GST_FLOW_OK;
+  Subflow *subflow = NULL;
+  gboolean urgent = FALSE;
   this = GST_MPRTPSENDER (parent);
   THIS_WRITELOCK (this);
-  GST_DEBUG_OBJECT (this, "RTP/MPRTP/OTHER sink");
+
+  if (!_process_report (this, buf, &subflow, &urgent)) {
+    GST_WARNING_OBJECT (this, "The report can not be processed");
+  }
+  if (_do_subflow_report_now (subflow, urgent)) {
+    result = gst_pad_push (subflow->outpad, _assemble_report (subflow));
+  }
+
+  THIS_WRITEUNLOCK (this);
+  return result;
+}
+
+
+GstBuffer *
+_assemble_report (Subflow * this)
+{
+  GstBuffer *result;
+  gpointer dataptr;
+  GstMPRTCPSubflowReport report;
+  guint16 length;
+//  GstRTCPBuffer rtcp = GST_RTCP_BUFFER_INIT;
+  guint8 src = 0;
+  GstMapInfo map = GST_MAP_INFO_INIT;
+
+  gst_mprtcp_report_init (&report);
+  gst_rtcp_header_getdown (&report.header, NULL, NULL, NULL, NULL, &length,
+      NULL);
+  length = (length + 1) << 2;
+  dataptr = g_malloc0 (length);
+  memcpy (dataptr, &report, length);
+  result = gst_buffer_new_wrapped (dataptr, length);
+  if (this->buf_report_sr != NULL) {
+    result = gst_buffer_append (result, this->buf_report_sr);
+    gst_buffer_unref (this->buf_report_sr);
+    this->buf_report_sr = NULL;
+    ++src;
+  }
+  if (this->buf_report_rr != NULL) {
+    result = gst_buffer_append (result, this->buf_report_rr);
+    gst_buffer_unref (this->buf_report_rr);
+    this->buf_report_rr = NULL;
+    ++src;
+  }
+  if (this->buf_report_xr != NULL) {
+    result = gst_buffer_append (result, this->buf_report_xr);
+    gst_buffer_unref (this->buf_report_xr);
+    this->buf_report_xr = NULL;
+    ++src;
+  }
+
+  gst_buffer_map (result, &map, GST_MAP_WRITE);
+  gst_rtcp_header_change ((GstRTCPHeader *) map.data, NULL, NULL, &src,
+      NULL, NULL, NULL);
+  gst_buffer_unmap (result, &map);
+
+//  gst_rtcp_buffer_map(result, GST_MAP_READ, &rtcp);
+//  gst_print_rtcp_buffer(&rtcp);
+//  gst_rtcp_buffer_unmap(&rtcp);
+
+  return result;
+
+}
+
+gboolean
+_process_report (GstMprtpsender * this, GstBuffer * buf, Subflow ** subflow,
+    gboolean * urgent)
+{
+  gboolean result = FALSE;
+  GstMPRTCPSubflowBlock *block;
+  guint16 subflow_id;
+  GstMapInfo map = GST_MAP_INFO_INIT;
+  guint8 block_type;
+  guint8 pt;
+
   if (!gst_buffer_map (buf, &map, GST_MAP_READ)) {
     GST_ERROR_OBJECT (this, "Buffer is not readable");
-    result = GST_FLOW_CUSTOM_ERROR;
     goto exit;
   }
   block = (GstMPRTCPSubflowBlock *) map.data;
   gst_mprtcp_block_getdown (&block->info, &block_type, NULL, &subflow_id);
 
-  if (!_select_subflow (this, (guint8) subflow_id, &subflow)) {
+  if (!_select_subflow (this, (guint8) subflow_id, subflow)) {
     GST_WARNING_OBJECT (this, "No subflow exists with id: %d", subflow_id);
     goto done;
   }
-
-  _add_report (subflow, block);
-  urgent = _is_block_urgent_to_send (subflow, block);
-  if (_do_subflow_report_now (subflow, urgent)) {
-    gst_pad_push (subflow->outpad, subflow->report_buf);
-    gst_buffer_unref (subflow->report_buf);
-    subflow->report_buf = NULL;
+  gst_rtcp_header_getdown (&block->block_header, NULL, NULL, NULL, &pt, NULL,
+      NULL);
+  result = TRUE;
+  if (pt == GST_RTCP_TYPE_RR) {
+    *urgent = _process_rr_report (*subflow, buf, block);
+  } else if (pt == GST_RTCP_TYPE_SR) {
+    *urgent = _process_sr_report (*subflow, buf, block);
+  } else if (pt == GST_RTCP_TYPE_XR) {
+    *urgent = _process_xr_rfc7243_report (*subflow, buf, block);
+  } else {
+    GST_WARNING_OBJECT (this, "Not recognized report to process");
   }
 done:
   gst_buffer_unmap (buf, &map);
-  THIS_WRITEUNLOCK (this);
 exit:
   return result;
 }
 
 gboolean
-_is_block_urgent_to_send (Subflow * subflow, GstMPRTCPSubflowBlock * block)
+_process_rr_report (Subflow * this, GstBuffer * buf,
+    GstMPRTCPSubflowBlock * block)
 {
-  gboolean result;
-  guint8 block_payload_type;
+  gboolean result = FALSE;
   guint8 fraction_lost;
-  gst_rtcp_header_getdown (&block->block_header, NULL, NULL,
-      NULL, &block_payload_type, NULL, NULL);
 
-  if (block_payload_type == GST_RTCP_TYPE_RR) {
-    gst_rtcp_rrb_getdown (&block->receiver_riport.blocks, NULL, &fraction_lost,
-        NULL, NULL, NULL, NULL, NULL);
-    result = fraction_lost > 0;
-  } else if (block_payload_type == GST_RTCP_TYPE_XR) {
-    result = TRUE;
+  if (this->buf_report_rr == NULL) {
+    this->buf_report_rr = buf;
+    gst_buffer_ref (this->buf_report_rr);
   } else {
-    result = FALSE;
+    _merge_rr_riports (this, &block->receiver_riport.blocks);
   }
+  gst_rtcp_rrb_getdown (&block->receiver_riport.blocks, NULL, &fraction_lost,
+      NULL, NULL, NULL, NULL, NULL);
+  result = fraction_lost > 0;
   return result;
 }
 
-//don't forget to unref the buffer when you don't need it.
-void
-_add_report (Subflow * this, GstMPRTCPSubflowBlock * block)
+gboolean
+_process_sr_report (Subflow * this, GstBuffer * buf,
+    GstMPRTCPSubflowBlock * block)
 {
-  GstMapInfo map = GST_MAP_INFO_INIT;
-  GstMPRTCPSubflowBlock *it;
-  GstMPRTCPSubflowReport *report;
-  guint16 length;
-  gpointer src;
-  guint8 payload_type, block_payload_type;
-  gboolean found = FALSE;
-
-  if (this->report_buf == NULL) {
-    src = g_malloc0 (1400);
-    report = (GstMPRTCPSubflowReport *) src;
-    gst_mprtcp_report_init (report);
-    gst_mprtcp_riport_append_block (report, block);
-    gst_rtcp_header_getdown (&report->header, NULL, NULL, NULL, NULL, &length,
-        NULL);
-    this->report_buf = gst_buffer_new_wrapped (src, (length + 1) << 2);
-    gst_buffer_ref (this->report_buf);
-    goto exit;
-  }
-
-  if (!gst_buffer_map (this->report_buf, &map, GST_MAP_READWRITE)) {
-    GST_ERROR_OBJECT (this, "Buffer is not readable");
-    goto exit;
-  }
-  report = (GstMPRTCPSubflowReport *) map.data;
-  for (it = gst_mprtcp_get_first_block (report);
-      it != NULL; it = gst_mprtcp_get_next_block (report, it)) {
-    gst_rtcp_header_getdown (&block->block_header, NULL, NULL,
-        NULL, &block_payload_type, NULL, NULL);
-    gst_rtcp_header_getdown (&it->block_header, NULL, NULL,
-        NULL, &payload_type, NULL, NULL);
-
-    if (payload_type != block_payload_type) {
-      continue;
-    }
-    found = TRUE;
-    if (payload_type == GST_RTCP_TYPE_SR) {
-      _merge_sr_blocks (&block->sender_riport, &it->sender_riport);
-    } else if (payload_type == GST_RTCP_TYPE_RR) {
-      _merge_rr_blocks (&block->receiver_riport, &it->receiver_riport);
-    } else if (payload_type == GST_RTCP_TYPE_XR) {
-      _merge_xr_blocks (&block->xr_rfc7243_riport, &it->xr_rfc7243_riport);
-    } else {
-      GST_WARNING_OBJECT (this, "The payload type %d cannot be "
-          "merged with any existed and saved_report report", payload_type);
-    }
-  }
-
-  if (!found) {
-    gpointer dst;
-    src = (gpointer) map.data;
-    dst = g_malloc0 (1400);
-    gst_rtcp_header_getdown (&report->header, NULL, NULL, NULL, NULL, &length,
-        NULL);
-    memcpy (dst, src, (length + 1) << 2);
-    gst_buffer_unmap (this->report_buf, &map);
-    gst_buffer_unref (this->report_buf);
-    report = (GstMPRTCPSubflowReport *) dst;
-    gst_mprtcp_riport_append_block (report, block);
-    gst_rtcp_header_getdown (&report->header, NULL, NULL, NULL, NULL, &length,
-        NULL);
-    this->report_buf = gst_buffer_new_wrapped (dst, (length + 1) << 2);
-    gst_buffer_ref (this->report_buf);
+  if (this->buf_report_sr == NULL) {
+    this->buf_report_sr = buf;
+    gst_buffer_ref (this->buf_report_sr);
   } else {
-    gst_buffer_unmap (this->report_buf, &map);
+    _merge_sr_riports (this, &block->sender_riport.sender_block);
   }
+  return FALSE;
+}
 
-exit:
-  return;
+gboolean
+_process_xr_rfc7243_report (Subflow * this, GstBuffer * buf,
+    GstMPRTCPSubflowBlock * block)
+{
+  if (this->buf_report_xr == NULL) {
+    this->buf_report_xr = buf;
+    gst_buffer_ref (this->buf_report_xr);
+  } else {
+    _merge_xr_riports (this, &block->xr_rfc7243_riport);
+  }
+  return TRUE;
 }
 
 
 void
-_merge_sr_blocks (GstRTCPSR * src, GstRTCPSR * dst)
+_merge_rr_riports (Subflow * this, GstRTCPRRBlock * new_rr)
 {
-  guint64 src_ntp;
-  guint32 src_rtp, src_pc, src_oc, dst_pc, dst_oc;
-  gst_rtcp_srb_getdown (&src->sender_block, &src_ntp, &src_rtp, &src_pc,
-      &src_oc);
-  gst_rtcp_srb_getdown (&dst->sender_block, NULL, NULL, &dst_pc, &dst_oc);
-  dst_pc += src_pc;
-  dst_oc += src_oc;
-  gst_rtcp_srb_setup (&dst->sender_block, src_ntp, src_rtp, dst_pc, dst_oc);
-}
+  guint8 old_fraction_lost;
+  guint8 new_fraction_lost;
+  guint32 new_cum_packet_lost;
+  guint32 new_LSR, new_DLSR, new_ext_hsn, new_jitter;
+  guint32 new_ssrc;
+  GstMapInfo map = GST_MAP_INFO_INIT;
+  GstMPRTCPSubflowBlock *block;
+  GstRTCPRRBlock *rr;
+  if (!gst_buffer_map (this->buf_report_rr, &map, GST_MAP_READ)) {
+    GST_ERROR_OBJECT (this, "Buffer is not readable");
+    return;
+  }
+  block = (GstMPRTCPSubflowBlock *) map.data;
+  rr = &block->receiver_riport.blocks;
+  gst_rtcp_rrb_getdown (new_rr, &new_ssrc, &new_fraction_lost,
+      &new_cum_packet_lost, &new_ext_hsn, &new_jitter, &new_LSR, &new_DLSR);
 
-void
-_merge_rr_blocks (GstRTCPRR * src, GstRTCPRR * dst)
-{
-  guint8 src_fraction_lost;
-  guint8 dst_fraction_lost;
-  guint32 src_cum_packet_lost;
-  guint32 src_LSR, src_DLSR, src_ext_hsn, src_jitter;
-  guint32 src_ssrc;
-
-  gst_rtcp_rrb_getdown (&src->blocks, &src_ssrc, &src_fraction_lost,
-      &src_cum_packet_lost, &src_ext_hsn, &src_jitter, &src_LSR, &src_DLSR);
-
-  gst_rtcp_rrb_getdown (&dst->blocks, NULL, &dst_fraction_lost,
+  gst_rtcp_rrb_getdown (rr, NULL, &old_fraction_lost,
       NULL, NULL, NULL, NULL, NULL);
 
-  dst_fraction_lost += src_fraction_lost;
+  new_fraction_lost += old_fraction_lost;
 
-  gst_rtcp_rrb_setup (&dst->blocks, src_ssrc, dst_fraction_lost,
-      src_cum_packet_lost, src_ext_hsn, src_jitter, src_LSR, src_DLSR);
+  gst_rtcp_rrb_setup (rr, new_ssrc, new_fraction_lost,
+      new_cum_packet_lost, new_ext_hsn, new_jitter, new_LSR, new_DLSR);
+
+  gst_buffer_unmap (this->buf_report_rr, &map);
+}
+
+
+void
+_merge_sr_riports (Subflow * this, GstRTCPSRBlock * new_sr)
+{
+  guint64 new_ntp;
+  guint32 new_rtp, new_pc, new_oc, old_pc, old_oc;
+  GstMapInfo map = GST_MAP_INFO_INIT;
+  GstMPRTCPSubflowBlock *block;
+  GstRTCPSRBlock *sr;
+
+  if (!gst_buffer_map (this->buf_report_sr, &map, GST_MAP_READ)) {
+    GST_ERROR_OBJECT (this, "Buffer is not readable");
+    return;
+  }
+  block = (GstMPRTCPSubflowBlock *) map.data;
+  sr = &block->sender_riport.sender_block;
+
+  gst_rtcp_srb_getdown (new_sr, &new_ntp, &new_rtp, &new_pc, &new_oc);
+  gst_rtcp_srb_getdown (sr, NULL, NULL, &old_pc, &old_oc);
+  new_pc += old_pc;
+  new_oc += old_oc;
+  gst_rtcp_srb_setup (sr, new_ntp, new_rtp, new_pc, new_oc);
+  gst_buffer_unmap (this->buf_report_sr, &map);
 }
 
 void
-_merge_xr_blocks (GstRTCPXR_RFC7243 * src, GstRTCPXR_RFC7243 * dst)
+_merge_xr_riports (Subflow * this, GstRTCPXR_RFC7243 * new_xr)
 {
-  guint32 src_db, dst_db;
-  gst_rtcp_xr_rfc7243_getdown (src, NULL, NULL, NULL, &src_db);
-  gst_rtcp_xr_rfc7243_getdown (dst, NULL, NULL, NULL, &dst_db);
-  dst_db += src_db;
-  gst_rtcp_xr_rfc7243_change (dst, NULL, NULL, NULL, &dst_db);
+  guint32 old_db, new_db;
+  GstMapInfo map = GST_MAP_INFO_INIT;
+  GstMPRTCPSubflowBlock *block;
+  GstRTCPXR_RFC7243 *xr;
+
+  if (!gst_buffer_map (this->buf_report_xr, &map, GST_MAP_READ)) {
+    GST_ERROR_OBJECT (this, "Buffer is not readable");
+    return;
+  }
+  block = (GstMPRTCPSubflowBlock *) map.data;
+  xr = &block->xr_rfc7243_riport;
+
+  gst_rtcp_xr_rfc7243_getdown (xr, NULL, NULL, NULL, &old_db);
+  gst_rtcp_xr_rfc7243_getdown (new_xr, NULL, NULL, NULL, &new_db);
+  new_db += old_db;
+  gst_rtcp_xr_rfc7243_change (xr, NULL, NULL, NULL, &new_db);
+
+  gst_buffer_unmap (this->buf_report_xr, &map);
 
 }
 

@@ -59,6 +59,7 @@ struct _GstMprtpscheduler
   StreamSplitter *splitter;
   gpointer controller;
   gboolean riport_flow_signal_sent;
+  gboolean rtp_passthrough;
 
   void (*controller_add_path) (gpointer, guint8, MPRTPSPath *);
   void (*controller_rem_path) (gpointer, guint8);
