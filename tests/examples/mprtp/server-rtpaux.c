@@ -415,9 +415,9 @@ main (int argc, char **argv)
   gst_bin_add (GST_BIN (pipe), rtpBin);
 
   videoSession = make_video_session (0);
-  audioSession = make_audio_session (1);
+  //audioSession = make_audio_session (1);
   add_stream (pipe, rtpBin, videoSession);
-  add_stream (pipe, rtpBin, audioSession);
+  //add_stream (pipe, rtpBin, audioSession);
 
   g_print ("starting server pipeline\n");
   gst_element_set_state (GST_ELEMENT (pipe), GST_STATE_PLAYING);

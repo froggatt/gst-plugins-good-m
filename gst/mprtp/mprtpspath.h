@@ -48,6 +48,7 @@ typedef enum{
   MPRTPS_PATH_STATE_PASSIVE,
 }MPRTPSPathState;
 
+#define MAX_INT32_POSPART 32767
 
 struct _MPRTPSPath
 {
@@ -65,6 +66,10 @@ struct _MPRTPSPath
 
   GstClockTime  sent_passive;
   GstClockTime  sent_active;
+
+  guint8    sent_octets[MAX_INT32_POSPART];
+  guint16   sent_octets_read;
+  guint16   sent_octets_write;
 };
 
 struct _MPRTPSPathClass
@@ -92,6 +97,7 @@ guint8 mprtps_path_get_id (MPRTPSPath * this);
 guint32 mprtps_path_get_total_sent_packet_num (MPRTPSPath * this);
 void mprtps_path_process_rtp_packet (MPRTPSPath * this, guint ext_header_id, GstRTPBuffer * rtp);
 guint32 mprtps_path_get_total_sent_payload_bytes (MPRTPSPath * this);
+guint32 mprtps_path_get_sent_octet_sum_for(MPRTPSPath *this, guint32 amount);
 MPRTPSPathState mprtps_path_get_state (MPRTPSPath * this);
 void mprtps_path_set_state (MPRTPSPath * this, MPRTPSPathState state);
 GstClockTime mprtps_path_get_time_sent_to_passive(MPRTPSPath *this);

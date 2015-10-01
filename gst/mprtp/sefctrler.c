@@ -98,8 +98,9 @@ struct _Subflow
   guint32 last_packet_count_for_goodput;
   guint32 actual_packet_count;
   guint32 last_payload_bytes_for_sr;
-  guint32 last_payload_bytes_for_goodput;
   guint32 actual_sent_payload_bytes;
+
+  gfloat actual_avg_bytes_sent;
 
 };
 
@@ -401,6 +402,7 @@ sefctrler_receive_mprtcp (gpointer ptr, GstBuffer * buf)
   }
   _report_processing_selector (subflow, block);
 
+  g_print ("subflow: %d goodput: %f\n", subflow->id, subflow->goodput);
   //validate and fire.
   _validate_cross_reports_data (subflow);
   event = _check_state (subflow);
@@ -495,7 +497,6 @@ reset_subflow (Subflow * this)
   this->last_packet_count_for_goodput = 0;
   this->last_packet_count_for_sr = 0;
   this->actual_packet_count = 0;
-  this->last_payload_bytes_for_goodput = 0;
   this->last_payload_bytes_for_sr = 0;
   this->actual_sent_payload_bytes = 0;
 }
@@ -527,14 +528,20 @@ void
 _report_processing_selector (Subflow * this, GstMPRTCPSubflowBlock * block)
 {
   guint8 pt;
+  GstClockTime now;
 
+  now = gst_clock_get_time (this->sysclock);
   gst_rtcp_header_getdown (&block->block_header, NULL, NULL, NULL, &pt, NULL,
       NULL);
 
   if (pt == (guint8) GST_RTCP_TYPE_RR) {
     _riport_processing_rrblock_processor (this, &block->receiver_riport.blocks);
+    _validate_cross_reports_data (this);
+    this->goodput = _get_goodput (this);
+    this->last_receiver_riport_time = now;
   } else if (pt == (guint8) GST_RTCP_TYPE_XR) {
     _riport_processing_xrblock_processor (this, &block->xr_rfc7243_riport);
+    this->last_xr_rfc7243_riport_time = now;
   } else {
     GST_WARNING ("Sending flow control can not process report type %d.", pt);
   }
@@ -549,14 +556,15 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
   guint16 HSN_diff;
   guint16 HSSN;
   gfloat lost_rate;
+  guint8 fraction_lost;
   //RiportProcessorRRProcessor *this_stage = _riport_processing_rrprocessor_;
 
   now = gst_clock_get_time (this->sysclock);
   //--------------------------
   //validating
   //--------------------------
-  gst_rtcp_rrb_getdown (rrb, NULL, NULL, NULL, &HSSN_read, NULL, &LSR_read,
-      &DLSR_read);
+  gst_rtcp_rrb_getdown (rrb, NULL, &fraction_lost, NULL, &HSSN_read, NULL,
+      &LSR_read, &DLSR_read);
 
   HSSN = (guint16) (HSSN_read & 0x0000FFFF);
   this->HSSN_diff = HSN_diff = _uint16_diff (this->HSSN, HSSN);
@@ -587,27 +595,26 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
     }
   }
 
-  if (rrb->fraction_lost > 0) {
+  if (fraction_lost > 0) {
     ++this->consecutive_lost;
     this->consecutive_non_lost = 0;
   } else {
     this->consecutive_lost = 0;
     ++this->consecutive_non_lost;
   }
-  this->lost_rate = lost_rate = ((gfloat) rrb->fraction_lost) / 256.;
+  this->lost_rate = lost_rate = ((gfloat) fraction_lost) / 256.;
   this->first_reicever_riport_arrived = TRUE;
-  this->last_receiver_riport_time = now;
 
 //gst_print_rtcp_rrb(rrb);
   //Debug print
-  g_print ("Receiver riport is processed, the calculations are the following:\n"
-      "lost_rate: %f\n"
-      "consecutive_lost: %d\n"
-      "consecutive_non_lost: %d\n"
-      "RTT (in ms): %lu\n",
-      this->lost_rate,
-      this->consecutive_lost,
-      this->consecutive_non_lost, GST_TIME_AS_MSECONDS (this->RTT));
+//  g_print ("Receiver riport is processed, the calculations are the following:\n"
+//      "lost_rate: %f\n"
+//      "consecutive_lost: %d\n"
+//      "consecutive_non_lost: %d\n"
+//      "RTT (in ms): %lu\n",
+//      this->lost_rate,
+//      this->consecutive_lost,
+//      this->consecutive_non_lost, GST_TIME_AS_MSECONDS (this->RTT));
 
 }
 
@@ -615,12 +622,9 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
 void
 _riport_processing_xrblock_processor (Subflow * this, GstRTCPXR_RFC7243 * xrb)
 {
-  GstClockTime now;
   guint8 interval_metric;
   guint32 discarded_bytes;
   gboolean early_bit;
-
-  now = gst_clock_get_time (this->sysclock);
 
   gst_rtcp_xr_rfc7243_getdown (xrb, &interval_metric,
       &early_bit, NULL, &discarded_bytes);
@@ -654,7 +658,6 @@ _riport_processing_xrblock_processor (Subflow * this, GstRTCPXR_RFC7243 * xrb)
     this->consecutive_discarded = 0;
     ++this->consecutive_non_discarded;
   }
-  this->last_xr_rfc7243_riport_time = now;
 }
 
 
@@ -671,6 +674,8 @@ _recalc (SndEventBasedController * this)
   gfloat allocated_bid = 0.;
   gfloat sending_bid;
 
+  g_print ("RECALCULATION STARTED\n");
+
   g_hash_table_iter_init (&iter, this->subflows);
   while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
     subflow = (Subflow *) val;
@@ -678,8 +683,7 @@ _recalc (SndEventBasedController * this)
     if (!mprtps_path_is_active (path)) {
       continue;
     }
-    _validate_cross_reports_data (subflow);
-    subflow->goodput = _get_goodput (subflow);
+
     is_non_congested = mprtps_path_is_non_congested (path);
     is_non_lossy = mprtps_path_is_non_lossy (path);
     if (is_non_congested && is_non_lossy) {
@@ -821,33 +825,6 @@ done:
 }
 
 Event
-_check_riport_timeout (Subflow * this)
-{
-  Event result = EVENT_FI;
-  MPRTPSPath *path;
-  GstClockTime now;
-  MPRTPSPathState path_state;
-
-  path = this->path;
-  path_state = mprtps_path_get_state (path);
-  now = gst_clock_get_time (this->sysclock);
-  if (path_state == MPRTPS_PATH_STATE_PASSIVE) {
-    goto done;
-  }
-  if (!this->first_reicever_riport_arrived) {
-    if (this->joined_time < now - RIPORT_TIMEOUT) {
-      result = EVENT_LATE;
-    }
-    goto done;
-  }
-  if (this->last_receiver_riport_time < now - RIPORT_TIMEOUT) {
-    result = EVENT_LATE;
-  }
-done:
-  return result;
-}
-
-Event
 _check_state (Subflow * this)
 {
   Event result = EVENT_FI;
@@ -906,6 +883,33 @@ _check_state (Subflow * this)
   return result;
 }
 
+Event
+_check_riport_timeout (Subflow * this)
+{
+  Event result = EVENT_FI;
+  MPRTPSPath *path;
+  GstClockTime now;
+  MPRTPSPathState path_state;
+
+  path = this->path;
+  path_state = mprtps_path_get_state (path);
+  now = gst_clock_get_time (this->sysclock);
+  if (path_state == MPRTPS_PATH_STATE_PASSIVE) {
+    goto done;
+  }
+  if (!this->first_reicever_riport_arrived) {
+    if (this->joined_time < now - RIPORT_TIMEOUT) {
+      result = EVENT_LATE;
+    }
+    goto done;
+  }
+  if (this->last_receiver_riport_time < now - RIPORT_TIMEOUT) {
+    result = EVENT_LATE;
+  }
+done:
+  return result;
+}
+
 void
 _validate_cross_reports_data (Subflow * this)
 {
@@ -926,27 +930,44 @@ gfloat
 _get_goodput (Subflow * this)
 {
   GstClockTimeDiff interval;
-  GstClockTime mseconds, now;
+  GstClockTime seconds, now;
   MPRTPSPath *path;
-  guint32 payload_bytes_sum = 0;
+  gfloat payload_bytes_sum = 0.;
   guint32 discarded_bytes;
   gfloat result;
+  guint32 octet_sum;
 
   now = gst_clock_get_time (this->sysclock);
   interval = GST_CLOCK_DIFF (this->last_receiver_riport_time, now);
-  mseconds = GST_TIME_AS_MSECONDS ((GstClockTime) interval);
+  seconds = GST_TIME_AS_SECONDS ((GstClockTime) interval);
+  if (this->last_receiver_riport_time == 0) {
+    seconds = 0;
+  }
   path = this->path;
 
-  this->actual_sent_payload_bytes =
-      mprtps_path_get_total_sent_payload_bytes (path);
-  payload_bytes_sum =
-      _uint32_diff (this->last_payload_bytes_for_goodput,
-      this->actual_sent_payload_bytes);
-  this->last_payload_bytes_for_goodput = this->actual_sent_payload_bytes;
-  discarded_bytes = this->early_discarded_bytes + this->late_discarded_bytes;
+  octet_sum = mprtps_path_get_sent_octet_sum_for (path, this->HSSN_diff);
+  payload_bytes_sum = (gfloat) (octet_sum << 3);
+  //mprtps_path_get_avg_media_rate;
 
-  result = ((gfloat) payload_bytes_sum *
-      (1. - this->lost_rate) - (gfloat) discarded_bytes) / ((gfloat) mseconds);
+  discarded_bytes = this->early_discarded_bytes + this->late_discarded_bytes;
+  if (seconds > 0) {
+    result = (payload_bytes_sum *
+        (1. - this->lost_rate) - (gfloat) discarded_bytes) / ((gfloat) seconds);
+
+//      g_print("%f = (%f * (1.-%f) - %f) / %f\n", result,
+//                payload_bytes_sum, this->lost_rate,
+//                (gfloat) discarded_bytes, (gfloat) seconds);
+
+  } else {
+    result = (payload_bytes_sum *
+        (1. - this->lost_rate) - (gfloat) discarded_bytes);
+
+//      g_print("%f = (%f * (1.-%f) - %f)\n", result,
+//                payload_bytes_sum, this->lost_rate,
+//                (gfloat) discarded_bytes);
+
+  }
+
   return result;
 }
 
@@ -978,6 +999,7 @@ _setup_sr_riport (Subflow * this, GstRTCPSR * sr, guint32 ssrc)
 
   this->last_payload_bytes_for_sr = this->actual_sent_payload_bytes;
 
+  this->actual_avg_bytes_sent = (gfloat) payload_bytes / (gfloat) packet_count;
   gst_rtcp_srb_setup (&sr->sender_block, ntptime, rtptime,
       packet_count, payload_bytes >> 3);
 }

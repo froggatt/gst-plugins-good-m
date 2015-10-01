@@ -83,6 +83,8 @@ mprtps_path_reset (MPRTPSPath * this)
 
   this->total_sent_packet_num = 0;
   this->total_sent_payload_bytes_sum = 0;
+  this->sent_octets_read = 0;
+  this->sent_octets_write = 0;
 }
 
 
@@ -100,8 +102,6 @@ mprtps_path_finalize (GObject * object)
 {
   MPRTPSPath *this = MPRTPS_PATH_CAST (object);
   g_object_unref (this->sysclock);
-
-
 }
 
 gboolean
@@ -286,6 +286,28 @@ mprtps_path_get_total_sent_payload_bytes (MPRTPSPath * this)
   return result;
 }
 
+guint32
+mprtps_path_get_sent_octet_sum_for (MPRTPSPath * this, guint32 amount)
+{
+  guint32 result = 0;
+  guint16 read;
+
+  THIS_WRITELOCK (this);
+  if (amount < 1 || this->sent_octets_read == this->sent_octets_write) {
+    goto done;
+  }
+  for (read = 0;
+      this->sent_octets_read != this->sent_octets_write && read < amount;
+      ++read) {
+    result += (guint32) this->sent_octets[this->sent_octets_read];
+    this->sent_octets_read += 1;
+    this->sent_octets_read &= MAX_INT32_POSPART;
+  }
+done:
+  THIS_WRITEUNLOCK (this);
+  return result;
+}
+
 
 void
 mprtps_path_process_rtp_packet (MPRTPSPath * this,
@@ -303,6 +325,11 @@ mprtps_path_process_rtp_packet (MPRTPSPath * this,
   ++(this->total_sent_packet_num);
   payload_bytes = gst_rtp_buffer_get_payload_len (rtp);
   this->total_sent_payload_bytes_sum += payload_bytes;
+
+  this->sent_octets[this->sent_octets_write] = payload_bytes >> 3;
+  this->sent_octets_write += 1;
+  this->sent_octets_write &= MAX_INT32_POSPART;
+
   gst_rtp_buffer_add_extension_onebyte_header (rtp, ext_header_id,
       (gpointer) & data, sizeof (data));
 
