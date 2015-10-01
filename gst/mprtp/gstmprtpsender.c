@@ -49,7 +49,7 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpsender_debug_category);
 #define THIS_READLOCK(this) (g_rw_lock_reader_lock(&this->rwmutex))
 #define THIS_READUNLOCK(this) (g_rw_lock_reader_unlock(&this->rwmutex))
 
-#define PACKET_IS_RTP(b) (b > 0x7f && b < 0xc0)
+#define PACKET_IS_RTP_OR_RTCP(b) (b > 0x7f && b < 0xc0)
 #define PACKET_IS_DTLS(b) (b > 0x13 && b < 0x40)
 #define PACKET_IS_RTCP(b) (b > 192 && b < 223)
 
@@ -541,7 +541,20 @@ _get_packet_mptype (GstMprtpsender * this,
     goto done;
   }
 
-  if (PACKET_IS_RTP (first_byte)) {
+  if (PACKET_IS_RTP_OR_RTCP (first_byte)) {
+    if (PACKET_IS_RTCP (second_byte)) {
+      if (second_byte != MPRTCP_PACKET_TYPE_IDENTIFIER) {
+        goto done;
+      }
+      if (subflow_id) {
+        *subflow_id = (guint8)
+            g_ntohs (*((guint16 *) (info->data + 8 /*RTCP Header */  +
+                    6 /*first block info until subflow id */ )));
+      }
+      result = PACKET_IS_MPRTCP;
+      goto done;
+    }
+
     if (G_UNLIKELY (!gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp))) {
       GST_WARNING_OBJECT (this, "The RTP packet is not readable");
       goto done;
@@ -567,18 +580,7 @@ _get_packet_mptype (GstMprtpsender * this,
     goto done;
   }
 
-  if (PACKET_IS_RTCP (second_byte)) {
-    if (second_byte != MPRTCP_PACKET_TYPE_IDENTIFIER) {
-      goto done;
-    }
-    if (subflow_id) {
-      *subflow_id = (guint8)
-          g_ntohs (*((guint16 *) (info->data + 8 /*RTCP Header */  +
-                  6 /*first block info until subflow id */ )));
-    }
-    result = PACKET_IS_MPRTCP;
-    goto done;
-  }
+
 done:
   return result;
 }
@@ -975,5 +977,5 @@ done:
 #undef THIS_WRITEUNLOCK
 #undef THIS_READLOCK
 #undef THIS_READUNLOCK
-#undef PACKET_IS_RTP
+#undef PACKET_IS_RTP_OR_RTCP
 #undef PACKET_IS_DTLS

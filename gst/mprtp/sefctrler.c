@@ -225,8 +225,7 @@ sefctrler_run (void *data)
     path = subflow->path;
 
     if ((event = _check_riport_timeout (subflow)) == EVENT_LATE) {
-      mprtps_path_set_passive (path);
-      stream_splitter_rem_path (this->splitter, subflow->id);
+      _fire (this, subflow, event);
       continue;
     }
 
@@ -379,7 +378,6 @@ sefctrler_receive_mprtcp (gpointer ptr, GstBuffer * buf)
   Subflow *subflow;
   GstMapInfo map = GST_MAP_INFO_INIT;
   Event event;
-
   if (G_UNLIKELY (!gst_buffer_map (buf, &map, GST_MAP_READ))) {
     GST_WARNING_OBJECT (this, "The buffer is not readable");
     return;
@@ -406,6 +404,8 @@ sefctrler_receive_mprtcp (gpointer ptr, GstBuffer * buf)
   //validate and fire.
   _validate_cross_reports_data (subflow);
   event = _check_state (subflow);
+  g_print ("Subflow: %d Actual state: %d event: %d\n",
+      subflow->id, mprtps_path_get_state (subflow->path), event);
   if (event != EVENT_FI) {
     _fire (this, subflow, event);
   }
@@ -552,7 +552,6 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
   //RiportProcessorRRProcessor *this_stage = _riport_processing_rrprocessor_;
 
   now = gst_clock_get_time (this->sysclock);
-
   //--------------------------
   //validating
   //--------------------------
@@ -582,6 +581,7 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
   //--------------------------
   if (LSR > 0) {
     guint64 diff = now - LSR;
+    //g_print("Diff: %lu, DLSR: %lu\n", diff, DLSR);
     if (DLSR < diff) {
       this->RTT = diff - DLSR;
     }
@@ -598,15 +598,16 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
   this->first_reicever_riport_arrived = TRUE;
   this->last_receiver_riport_time = now;
 
-
+//gst_print_rtcp_rrb(rrb);
   //Debug print
   g_print ("Receiver riport is processed, the calculations are the following:\n"
       "lost_rate: %f\n"
       "consecutive_lost: %d\n"
       "consecutive_non_lost: %d\n"
-      "RTT (in ms): %lu",
+      "RTT (in ms): %lu\n",
       this->lost_rate,
-      this->consecutive_lost, this->consecutive_non_lost, this->RTT);
+      this->consecutive_lost,
+      this->consecutive_non_lost, GST_TIME_AS_MSECONDS (this->RTT));
 
 }
 
@@ -737,7 +738,7 @@ _fire (SndEventBasedController * this, Subflow * subflow, Event event)
   MPRTPSPathState path_state;
   path = subflow->path;
   path_state = mprtps_path_get_state (path);
-  //g_print("FIRE->%d:%d\n", subflow->id, event);
+  g_print ("FIRE->%d:%d\n", subflow->id, event);
   //passive state
   if (path_state == MPRTPS_PATH_STATE_PASSIVE) {
     switch (event) {

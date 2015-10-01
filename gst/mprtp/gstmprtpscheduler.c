@@ -47,7 +47,7 @@
 GST_DEBUG_CATEGORY_STATIC (gst_mprtpscheduler_debug_category);
 #define GST_CAT_DEFAULT gst_mprtpscheduler_debug_category
 
-#define PACKET_IS_RTP(b) (b > 0x7f && b < 0xc0)
+#define PACKET_IS_RTP_OR_RTCP(b) (b > 0x7f && b < 0xc0)
 
 #define THIS_WRITELOCK(this) (g_rw_lock_writer_lock(&this->rwmutex))
 #define THIS_WRITEUNLOCK(this) (g_rw_lock_writer_unlock(&this->rwmutex))
@@ -615,7 +615,7 @@ gst_mprtpscheduler_rtp_sink_chain (GstPad * pad, GstObject * parent,
     return GST_FLOW_OK;
   }
 
-  if (!PACKET_IS_RTP (first_byte)) {
+  if (!PACKET_IS_RTP_OR_RTCP (first_byte)) {
     GST_WARNING_OBJECT (this, "Not RTP Packet arrived ar rtp_sink");
     return gst_pad_push (this->mprtp_srcpad, buffer);
   }
@@ -688,31 +688,15 @@ gst_mprtpscheduler_mprtcp_rr_sink_chain (GstPad * pad, GstObject * parent,
     GstBuffer * buf)
 {
   GstMprtpscheduler *this;
-  GstMapInfo info;
-  guint8 *data;
   GstFlowReturn result;
-
 
   this = GST_MPRTPSCHEDULER (parent);
   GST_DEBUG_OBJECT (this, "RTCP/MPRTCP sink");
   THIS_READLOCK (this);
-  if (!gst_buffer_map (buf, &info, GST_MAP_READ)) {
-    GST_WARNING ("Buffer is not readable");
-    result = GST_FLOW_ERROR;
-    goto done;
-  }
-  data = info.data + 1;
-  gst_buffer_unmap (buf, &info);
-
-  if (*data != MPRTCP_PACKET_TYPE_IDENTIFIER) {
-    GST_WARNING_OBJECT (this, "mprtcp_sr_sink process only MPRTCP packets");
-    result = GST_FLOW_OK;
-    goto done;
-  }
 
   this->mprtcp_receiver (this->controller, buf);
+
   result = GST_FLOW_OK;
-done:
   THIS_READUNLOCK (this);
   return result;
 
@@ -840,4 +824,4 @@ _change_path_state (GstMprtpscheduler * this, guint8 subflow_id,
 #undef MPRTP_SENDER_DEFAULT_ALPHA_VALUE
 #undef MPRTP_SENDER_DEFAULT_BETA_VALUE
 #undef MPRTP_SENDER_DEFAULT_GAMMA_VALUE
-#undef PACKET_IS_RTP
+#undef PACKET_IS_RTP_OR_RTCP

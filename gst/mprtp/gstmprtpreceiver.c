@@ -51,7 +51,7 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpreceiver_debug_category);
 #define THIS_READLOCK(mprtcp_ptr) (g_rw_lock_reader_lock(&mprtcp_ptr->rwmutex))
 #define THIS_READUNLOCK(mprtcp_ptr) (g_rw_lock_reader_unlock(&mprtcp_ptr->rwmutex))
 
-#define PACKET_IS_RTP(b) (b > 0x7f && b < 0xc0)
+#define PACKET_IS_RTP_OR_RTCP(b) (b > 0x7f && b < 0xc0)
 #define PACKET_IS_DTLS(b) (b > 0x13 && b < 0x40)
 
 typedef struct
@@ -314,7 +314,7 @@ gst_mprtpreceiver_sink_query (GstPad * sinkpad, GstObject * parent,
   GstMprtpreceiver *this = GST_MPRTPRECEIVER (parent);
   gboolean result;
   GST_DEBUG_OBJECT (this, "query");
-  g_print ("QUERY to the sink: %s\n", GST_QUERY_TYPE_NAME (query));
+//  g_print ("QUERY to the sink: %s\n", GST_QUERY_TYPE_NAME (query));
   switch (GST_QUERY_TYPE (query)) {
 
     default:
@@ -343,6 +343,7 @@ gst_mprtpreceiver_sink_event (GstPad * pad, GstObject * parent,
     case GST_EVENT_LATENCY:
     case GST_EVENT_STREAM_START:
       if (this->only_report_receiving) {
+        result = TRUE;
         goto done;
       }
     default:
@@ -468,14 +469,11 @@ _get_packet_mptype (GstMprtpreceiver * this,
     goto done;
   }
 
-  if (PACKET_IS_RTP (first_byte)) {
+  if (PACKET_IS_RTP_OR_RTCP (first_byte)
+      && second_byte == MPRTCP_PACKET_TYPE_IDENTIFIER) {
+    result = PACKET_IS_MPRTCP;
     goto done;
   }
-
-  if (second_byte != MPRTCP_PACKET_TYPE_IDENTIFIER) {
-    goto done;
-  }
-  result = PACKET_IS_MPRTCP;
 
 done:
   return result;
@@ -499,10 +497,8 @@ gst_mprtpreceiver_sink_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     result = GST_FLOW_CUSTOM_ERROR;
     goto exit;
   }
-
   THIS_READLOCK (this);
   packet_type = _get_packet_mptype (this, buf, &map, &subflow_id);
-
   if (packet_type == PACKET_IS_MPRTCP) {
     result = _send_mprtcp_buffer (this, buf);
     gst_buffer_unmap (buf, &map);
@@ -534,7 +530,6 @@ _send_mprtcp_buffer (GstMprtpreceiver * this, GstBuffer * buf)
   gpointer data;
   gsize buf_length;
 
-
   if (G_UNLIKELY (!gst_rtcp_buffer_map (buf, GST_MAP_READ, &rtcp))) {
     GST_WARNING_OBJECT (this, "The RTCP packet is not readable");
     return result;
@@ -558,7 +553,6 @@ _send_mprtcp_buffer (GstMprtpreceiver * this, GstBuffer * buf)
     buffer = gst_buffer_new_wrapped (data, buf_length);
     outpad = (block_riport_type == GST_RTCP_TYPE_SR) ? this->mprtcp_sr_srcpad
         : this->mprtcp_rr_srcpad;
-
     if ((result = gst_pad_push (outpad, buffer)) != GST_FLOW_OK) {
       goto done;
     }
@@ -573,5 +567,5 @@ done:
 #undef THIS_WRITEUNLOCK
 #undef THIS_READLOCK
 #undef THIS_READUNLOCK
-#undef PACKET_IS_RTP
+#undef PACKET_IS_RTP_OR_RTCP
 #undef PACKET_IS_DTLS
