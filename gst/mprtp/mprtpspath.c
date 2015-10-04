@@ -85,6 +85,7 @@ mprtps_path_reset (MPRTPSPath * this)
   this->total_sent_payload_bytes_sum = 0;
   this->sent_octets_read = 0;
   this->sent_octets_write = 0;
+  this->max_bytes_per_ms = 0;
 }
 
 
@@ -191,6 +192,45 @@ mprtps_path_get_time_sent_to_passive (MPRTPSPath * this)
   return result;
 }
 
+GstClockTime
+mprtps_path_get_time_sent_to_non_congested (MPRTPSPath * this)
+{
+  GstClockTime result;
+  THIS_READLOCK (this);
+  result = this->sent_non_congested;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+GstClockTime
+mprtps_path_get_time_sent_to_middly_congested (MPRTPSPath * this)
+{
+  GstClockTime result;
+  THIS_READLOCK (this);
+  result = this->sent_middly_congested;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+GstClockTime
+mprtps_path_get_time_sent_to_congested (MPRTPSPath * this)
+{
+  GstClockTime result;
+  THIS_READLOCK (this);
+  result = this->sent_congested;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+void
+mprtps_path_set_max_bytes_per_ms (MPRTPSPath * this, guint32 bytes_per_ms)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->max_bytes_per_ms = bytes_per_ms;
+  g_print ("T%d it changed\n", this->id);
+  THIS_WRITEUNLOCK (this);
+}
 
 gboolean
 mprtps_path_is_non_lossy (MPRTPSPath * this)
@@ -209,6 +249,7 @@ mprtps_path_set_lossy (MPRTPSPath * this)
   g_return_if_fail (this);
   THIS_WRITELOCK (this);
   this->state &= (guint8) 255 ^ (guint8) MPRTPS_PATH_FLAG_NON_LOSSY;
+  this->sent_middly_congested = gst_clock_get_time (this->sysclock);
   THIS_WRITEUNLOCK (this);
 }
 
@@ -240,6 +281,7 @@ mprtps_path_set_congested (MPRTPSPath * this)
   g_return_if_fail (this);
   THIS_WRITELOCK (this);
   this->state &= (guint8) 255 ^ (guint8) MPRTPS_PATH_FLAG_NON_CONGESTED;
+  this->sent_congested = gst_clock_get_time (this->sysclock);
   THIS_WRITEUNLOCK (this);
 }
 
@@ -250,6 +292,7 @@ mprtps_path_set_non_congested (MPRTPSPath * this)
   g_return_if_fail (this);
   THIS_WRITELOCK (this);
   this->state |= (guint8) MPRTPS_PATH_FLAG_NON_CONGESTED;
+  this->sent_non_congested = gst_clock_get_time (this->sysclock);
   THIS_WRITEUNLOCK (this);
 }
 
@@ -282,6 +325,39 @@ mprtps_path_get_total_sent_payload_bytes (MPRTPSPath * this)
   guint32 result;
   THIS_READLOCK (this);
   result = this->total_sent_payload_bytes_sum;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+gboolean
+mprtps_path_is_overused (MPRTPSPath * this)
+{
+  gboolean result;
+  GstClockTime now, delta;
+  THIS_READLOCK (this);
+  if (this->max_bytes_per_ms == 0) {
+    result = FALSE;
+    goto done;
+  }
+  now = gst_clock_get_time (this->sysclock);
+  delta = now - this->last_packet_sent_time;
+  if (GST_SECOND < delta) {
+    result = FALSE;
+    goto done;
+  }
+  delta = GST_TIME_AS_MSECONDS (delta);
+  if (delta < 1) {
+    delta = 1;
+  }
+  result =
+      (gfloat) this->last_sent_payload_bytes / (gfloat) delta >
+      (gfloat) this->max_bytes_per_ms;
+//  g_print("|%f / %f = %f > %f|",
+//          (gfloat)this->last_sent_payload_bytes,
+//          (gfloat)delta,
+//          (gfloat)this->last_sent_payload_bytes / delta,
+//          (gfloat)this->max_bytes_per_ms);
+done:
   THIS_READUNLOCK (this);
   return result;
 }
@@ -321,9 +397,10 @@ mprtps_path_process_rtp_packet (MPRTPSPath * this,
     ++(this->cycle_num);
   }
   data.seq = this->seq;
-
   ++(this->total_sent_packet_num);
   payload_bytes = gst_rtp_buffer_get_payload_len (rtp);
+  this->last_sent_payload_bytes = payload_bytes;
+  this->last_packet_sent_time = gst_clock_get_time (this->sysclock);
   this->total_sent_payload_bytes_sum += payload_bytes;
 
   this->sent_octets[this->sent_octets_write] = payload_bytes >> 3;

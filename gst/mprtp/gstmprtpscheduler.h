@@ -37,6 +37,8 @@ G_BEGIN_DECLS
 typedef struct _GstMprtpscheduler GstMprtpscheduler;
 typedef struct _GstMprtpschedulerClass GstMprtpschedulerClass;
 
+#define SCHEDULER_RETAIN_QUEUE_MAX_ITEMS 255
+
 
 struct _GstMprtpscheduler
 {
@@ -49,17 +51,30 @@ struct _GstMprtpscheduler
   GstPad *mprtcp_rr_sinkpad;
   GstPad *mprtcp_sr_srcpad;
 
-  gfloat alpha_value;
-  gfloat beta_value;
-  gfloat gamma_value;
-  guint8 ext_header_id;
-  guint flow_controlling_mode;
-  GHashTable *paths;
-  GRWLock rwmutex;
-  StreamSplitter *splitter;
-  gpointer controller;
-  gboolean riport_flow_signal_sent;
-  gboolean rtp_passthrough;
+  gfloat           alpha_value;
+  gfloat           beta_value;
+  gfloat           gamma_value;
+  guint8           ext_header_id;
+  guint            flow_controlling_mode;
+  GHashTable*      paths;
+  GRWLock          rwmutex;
+  StreamSplitter*  splitter;
+  gpointer         controller;
+  gboolean         riport_flow_signal_sent;
+  gboolean         retain_allowed;
+  guint            subflows_num;
+
+  GstClock*        sysclock;
+  gboolean         retained_process_started;
+  GstClockTime     retained_last_popped_item_time;
+  RetainedItem     retained_queue[SCHEDULER_RETAIN_QUEUE_MAX_ITEMS+1];
+  guint16          retained_queue_write_index;
+  guint16          retained_queue_counter;
+  guint16          retained_queue_read_index;
+  GstTask*         retained_thread;
+  GRecMutex        retained_thread_mutex;
+
+  guint            retain_max_time_in_ms;
 
   void (*controller_add_path) (gpointer, guint8, MPRTPSPath *);
   void (*controller_rem_path) (gpointer, guint8);
@@ -67,31 +82,7 @@ struct _GstMprtpscheduler
   void (*riport_can_flow) (gpointer);
   guint32 rtcp_sent_octet_sum;
 
-  /*
-     gboolean       flowable;
-     guint          rtcp_sent_octet_sum;
-     GMutex         subflows_mutex;
-     guint32        ssrc;
-     GstSegment     segment;
-     guint8         ext_header_id;
-     gboolean       subflow_riports_enabled;
-     gboolean       auto_sending_rates_enabled;
-     guint16        mprtcp_mtu;
-     gfloat         charge_value;
 
-     guint32        max_delay;
-     GList*         subflows;
-     gboolean       has_new_manual_sending_rate;
-     gboolean       no_active_subflows;
-     GstTask*       scheduler;
-     guint32        scheduler_state;
-     GRecMutex      scheduler_mutex;
-     GstTask*       riporter;
-     GRecMutex      riporter_mutex;
-     GCond          scheduler_cond;
-     GstClockTime   scheduler_last_run;
-     GstClockTime   last_schtree_commit;
-   */
 
 };
 

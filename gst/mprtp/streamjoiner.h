@@ -22,8 +22,9 @@ typedef struct _StreamJoinerClass StreamJoinerClass;
 #define STREAM_JOINER_IS_SOURCE_CLASS(klass)  (G_TYPE_CHECK_CLASS_TYPE((klass),STREAM_JOINER_TYPE))
 #define STREAM_JOINER_CAST(src)        ((StreamJoiner *)(src))
 
-
 #define MPRTP_SENDER_SCHTREE_MAX_PATH_NUM 32
+
+//#define DEBUG_DATA_ON
 
 struct _StreamJoiner
 {
@@ -44,8 +45,9 @@ struct _StreamJoiner
   GstClock*         sysclock;
   void            (*send_mprtp_packet_func)(gpointer,GstBuffer*);
   gpointer          send_mprtp_packet_data;
-
+#ifdef DEBUG_DATA_ON
   GstClockTime      last_stat_produce;
+#endif
 };
 
 struct _StreamJoinerClass{

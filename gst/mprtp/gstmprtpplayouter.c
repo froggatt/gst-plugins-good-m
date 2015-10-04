@@ -89,7 +89,7 @@ static gboolean _try_get_path (GstMprtpplayouter * this, guint16 subflow_id,
     MPRTPRPath ** result);
 static void _change_flow_riporting_mode (GstMprtpplayouter * this,
     guint new_flow_riporting_mode);
-
+static GstStructure *_collect_infos (GstMprtpplayouter * this);
 
 enum
 {
@@ -101,6 +101,7 @@ enum
   PROP_PIVOT_CLOCK_RATE,
   PROP_AUTO_FLOW_RIPORTING,
   PROP_RTP_PASSTHROUGH,
+  PROP_SUBFLOWS_STATS,
 };
 
 /* pad templates */
@@ -182,6 +183,12 @@ gst_mprtpplayouter_class_init (GstMprtpplayouterClass * klass)
           "for playout delay at the receiver", 0,
           G_MAXUINT, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_EXT_HEADER_ID,
+      g_param_spec_uint ("ext-header-id",
+          "Set or get the id for the RTP extension",
+          "Sets or gets the id for the extension header the MpRTP based on", 0,
+          15, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_JOIN_SUBFLOW,
       g_param_spec_uint ("join-subflow", "the subflow id requested to join",
           "Join a subflow with a given id.", 0,
@@ -208,6 +215,12 @@ gst_mprtpplayouter_class_init (GstMprtpplayouterClass * klass)
           "through the element if it hasn't any active subflow.",
           TRUE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_SUBFLOWS_STATS,
+      g_param_spec_string ("subflow-stats",
+          "Extract subflow stats",
+          "Collect subflow statistics and return with "
+          "a structure contains it",
+          "NULL", G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
   element_class->change_state =
       GST_DEBUG_FUNCPTR (gst_mprtpplayouter_change_state);
@@ -294,7 +307,7 @@ gst_mprtpplayouter_set_property (GObject * object, guint property_id,
   switch (property_id) {
     case PROP_EXT_HEADER_ID:
       THIS_WRITELOCK (this);
-      this->ext_header_id = g_value_get_int (value);
+      this->ext_header_id = (guint8) g_value_get_uint (value);
       THIS_WRITEUNLOCK (this);
       break;
     case PROP_PIVOT_SSRC:
@@ -347,7 +360,7 @@ gst_mprtpplayouter_get_property (GObject * object, guint property_id,
   switch (property_id) {
     case PROP_EXT_HEADER_ID:
       THIS_READLOCK (this);
-      g_value_set_int (value, this->ext_header_id);
+      g_value_set_uint (value, (guint) this->ext_header_id);
       THIS_READUNLOCK (this);
       break;
     case PROP_PIVOT_CLOCK_RATE:
@@ -370,11 +383,97 @@ gst_mprtpplayouter_get_property (GObject * object, guint property_id,
       g_value_set_boolean (value, this->rtp_passthrough);
       THIS_READUNLOCK (this);
       break;
+    case PROP_SUBFLOWS_STATS:
+      THIS_READLOCK (this);
+      g_value_set_string (value,
+          gst_structure_to_string (_collect_infos (this)));
+      THIS_READUNLOCK (this);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
   }
 }
+
+
+GstStructure *
+_collect_infos (GstMprtpplayouter * this)
+{
+  GstStructure *result;
+  GHashTableIter iter;
+  gpointer key, val;
+  MPRTPRPath *path;
+  gint index = 0;
+  GValue g_value = { 0 };
+  gchar *field_name;
+  result = gst_structure_new ("PlayoutSubflowReports",
+      "length", G_TYPE_UINT, this->subflows_num, NULL);
+  g_value_init (&g_value, G_TYPE_UINT);
+  g_hash_table_iter_init (&iter, this->paths);
+  while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
+    path = (MPRTPRPath *) val;
+
+    field_name = g_strdup_printf ("subflow-%d-id", index);
+    g_value_set_uint (&g_value, mprtpr_path_get_id (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-lost_packet_num", index);
+    g_value_set_uint (&g_value, mprtpr_path_get_total_packet_losts_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-received_packet_num", index);
+    g_value_set_uint (&g_value,
+        mprtpr_path_get_total_received_packets_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-duplicated_packet_num", index);
+    g_value_set_uint (&g_value,
+        mprtpr_path_get_total_duplicated_packet_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-discarded_bytes", index);
+    g_value_set_uint (&g_value,
+        mprtpr_path_get_total_late_discarded_bytes_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-jitter", index);
+    g_value_set_uint (&g_value, mprtpr_path_get_jitter (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-HSN", index);
+    g_value_set_uint (&g_value, mprtpr_path_get_highest_sequence_number (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-cycle_num", index);
+    g_value_set_uint (&g_value, mprtpr_path_get_cycle_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name =
+        g_strdup_printf ("subflow-%d-early_discarded_packet_num", index);
+    g_value_set_uint (&g_value,
+        mprtpr_path_get_total_early_discarded_packets_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name =
+        g_strdup_printf ("subflow-%d-late_discarded_packet_num", index);
+    g_value_set_uint (&g_value,
+        mprtpr_path_get_total_late_discarded_bytes_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+    ++index;
+  }
+  return result;
+}
+
 
 gboolean
 gst_mprtpplayouter_sink_query (GstPad * sinkpad, GstObject * parent,
@@ -459,6 +558,7 @@ _join_path (GstMprtpplayouter * this, guint8 subflow_id)
   g_hash_table_insert (this->paths, GINT_TO_POINTER (subflow_id), path);
   stream_joiner_add_path (this->joiner, subflow_id, path);
   this->controller_add_path (this->controller, subflow_id, path);
+  ++this->subflows_num;
 exit:
   return;
 }
@@ -479,6 +579,9 @@ _detach_path (GstMprtpplayouter * this, guint8 subflow_id)
   g_hash_table_remove (this->paths, GINT_TO_POINTER (subflow_id));
   stream_joiner_rem_path (this->joiner, subflow_id);
   this->controller_rem_path (this->controller, subflow_id);
+  if (--this->subflows_num) {
+    this->subflows_num = 0;
+  }
 exit:
   return;
 }

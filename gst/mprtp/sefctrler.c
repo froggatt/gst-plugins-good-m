@@ -77,6 +77,9 @@ struct _Subflow
   GstClockTime last_receiver_riport_time;
   GstClockTime last_xr_rfc7243_riport_time;
   GstClockTime last_sender_riport_time;
+
+  GstClockTime distortion_happened;
+  GstClockTime trial_happened;
   gfloat goodput;
   guint32 media_rate;
   gfloat sr_riport_bw;
@@ -829,6 +832,9 @@ _check_state (Subflow * this)
 {
   Event result = EVENT_FI;
   GstClockTime sent_passive;
+  GstClockTime sent_congested;
+  GstClockTime sent_non_congested;
+  GstClockTime sent_middly_congested;
   GstClockTime now;
   MPRTPSPathState path_state;
 
@@ -838,36 +844,74 @@ _check_state (Subflow * this)
     case MPRTPS_PATH_STATE_NON_CONGESTED:
       if (PATH_RTT_MAX_TRESHOLD < this->RTT) {
         result = EVENT_LATE;
-      } else if (this->consecutive_lost > 2 && this->consecutive_discarded > 2) {
+        goto done;
+      }
+      if (this->consecutive_lost > 2 && this->consecutive_discarded > 2) {
         result = EVENT_CONGESTION;
-      } else if (this->consecutive_lost > 2
-          && this->consecutive_non_discarded > 2) {
+        goto done;
+      }
+      if (this->consecutive_lost > 2 && this->consecutive_non_discarded > 2) {
         result = EVENT_LOSSY;
-      } else if (this->consecutive_lost > 1 && this->consecutive_discarded > 0) {
+        goto done;
+      }
+      if (this->consecutive_lost > 1 && this->consecutive_discarded > 0) {
         result = EVENT_DISTORTION;
-      } else if (this->consecutive_non_lost > 2) {
+        this->distortion_happened = now;
+        goto done;
+      }
+      sent_non_congested =
+          mprtps_path_get_time_sent_to_non_congested (this->path);
+      if (sent_non_congested < now - 20 * GST_SECOND
+          && this->distortion_happened < now - 20 * GST_SECOND
+          && this->trial_happened < now - 20 * GST_SECOND
+          && this->consecutive_non_lost > 2
+          && this->consecutive_non_discarded > 2) {
         result = EVENT_TRY;
+        this->trial_happened = now;
+        goto done;
       }
       break;
     case MPRTPS_PATH_STATE_MIDDLY_CONGESTED:
       if (PATH_RTT_MAX_TRESHOLD < this->RTT) {
         result = EVENT_LATE;
-      } else if (this->consecutive_non_lost > 2) {
+        goto done;
+      }
+      sent_middly_congested =
+          mprtps_path_get_time_sent_to_middly_congested (this->path);
+
+      if (sent_middly_congested < now - 20 * GST_SECOND &&
+          this->consecutive_non_lost > 2) {
         result = EVENT_SETTLED;
-      } else if (this->consecutive_discarded > 1) {
+        goto done;
+      }
+      if (sent_middly_congested < now - 10 * GST_SECOND &&
+          this->consecutive_discarded > 1) {
         result = EVENT_CONGESTION;
+        goto done;
       }
       break;
     case MPRTPS_PATH_STATE_CONGESTED:
       if (PATH_RTT_MAX_TRESHOLD < this->RTT) {
         result = EVENT_LATE;
-      } else if (this->consecutive_non_lost > 2
-          && this->consecutive_non_discarded > 2) {
+        goto done;
+      }
+
+      sent_congested = mprtps_path_get_time_sent_to_congested (this->path);
+      if (sent_congested < now - 20 * GST_SECOND &&
+          this->distortion_happened < now - 20 * GST_SECOND &&
+          this->consecutive_non_lost > 2 &&
+          this->consecutive_non_discarded > 2) {
         result = EVENT_SETTLED;
-      } else if (this->consecutive_non_discarded > 2) {
+      }
+      if (sent_congested < now - 10 * GST_SECOND &&
+          this->consecutive_non_discarded > 2) {
         result = EVENT_LOSSY;
-      } else if (this->consecutive_discarded > 1) {
+        goto done;
+      }
+      if (this->consecutive_discarded > 1) {
         result = EVENT_DISTORTION;
+        this->distortion_happened = now;
+        goto done;
       }
       break;
     case MPRTPS_PATH_STATE_PASSIVE:
@@ -880,6 +924,8 @@ _check_state (Subflow * this)
     default:
       break;
   }
+
+done:
   return result;
 }
 

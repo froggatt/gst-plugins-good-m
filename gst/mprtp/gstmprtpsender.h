@@ -43,6 +43,10 @@ struct _GstMprtpsender
   GstPad *mprtcp_sr_sinkpad;
   GstPad *pivot_outpad;
 
+  GstEvent *event_stream_start;
+  GstEvent *event_segment;
+  GstEvent *event_caps;
+
   GstMprtpsenderPrivate *priv;
 };
 

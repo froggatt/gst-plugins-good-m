@@ -57,6 +57,8 @@ struct _GstMprtpplayouter
   StreamJoiner *joiner;
   gpointer controller;
 
+  guint  subflows_num;
+
   void (*controller_add_path) (gpointer, guint8, MPRTPRPath *);
   void (*controller_rem_path) (gpointer, guint8);
   void (*mprtcp_receiver) (gpointer, GstBuffer *);

@@ -42,6 +42,7 @@ struct _GstMprtpreceiver
   GstPad *mprtcp_sr_srcpad;
 
   guint only_report_receiving;
+  guint8 ext_header_id;
 };
 
 struct _GstMprtpreceiverClass

@@ -124,7 +124,7 @@ mprtpr_path_get_jitter (MPRTPRPath * this)
   return result;
 }
 
-guint16
+guint32
 mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this)
 {
   guint16 result;
@@ -134,7 +134,7 @@ mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this)
   return result;
 }
 
-guint16
+guint32
 mprtpr_path_get_total_late_discarded_num (MPRTPRPath * this)
 {
   guint16 result;
@@ -154,8 +154,18 @@ mprtpr_path_get_total_late_discarded_bytes_num (MPRTPRPath * this)
   return result;
 }
 
+guint64
+mprtpr_path_get_total_received_packets_num (MPRTPRPath * this)
+{
+  guint32 result;
+  THIS_READLOCK (this);
+  result = this->total_packet_received;
+  THIS_READUNLOCK (this);
+  return result;
+}
 
-guint16
+
+guint32
 mprtpr_path_get_total_duplicated_packet_num (MPRTPRPath * this)
 {
   guint16 result;
@@ -359,6 +369,7 @@ mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer * buf,
     this->actual_seq = subflow_sequence;
     this->HSN = subflow_sequence;
     this->packet_received = 1;
+    this->total_packet_received = 1;
     this->seq_initialized = TRUE;
     this->result = g_list_prepend (this->result, buf);
     goto done;
@@ -367,6 +378,7 @@ mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer * buf,
 
   //calculate lost, discarded and received packets
   ++this->packet_received;
+  ++this->total_packet_received;
   if (0x8000 < this->HSN && subflow_sequence < 0x8000 &&
       this->received_since_cycle_is_increased > 0x8888) {
     this->received_since_cycle_is_increased = 0;

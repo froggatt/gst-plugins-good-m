@@ -16,6 +16,7 @@ typedef struct _StreamSplitter StreamSplitter;
 typedef struct _StreamSplitterClass StreamSplitterClass;
 typedef struct _StreamSplitterPrivate StreamSplitterPrivate;
 typedef struct _SchNode SchNode;
+typedef struct _RetainedItem RetainedItem;
 
 #define STREAM_SPLITTER_TYPE             (stream_splitter_get_type())
 #define STREAM_SPLITTER(src)             (G_TYPE_CHECK_INSTANCE_CAST((src),STREAM_SPLITTER_TYPE,StreamSplitter))
@@ -27,6 +28,11 @@ typedef struct _SchNode SchNode;
 
 #define MPRTP_SENDER_STREAM_SPLITTER_MAX_PATH_NUM 32
 
+struct _RetainedItem{
+  GstClockTime time;
+  GstBuffer   *buffer;
+};
+
 struct _StreamSplitter
 {
   GObject          object;
@@ -35,7 +41,7 @@ struct _StreamSplitter
   gboolean         path_is_removed;
   gboolean         changes_are_committed;
 
-  SchNode*         full_tree;
+  SchNode*         non_keyframes_tree;
   SchNode*         keyframes_tree;
 
   GHashTable*      subflows;
@@ -47,7 +53,10 @@ struct _StreamSplitter
   GstTask*         thread;
   GRecMutex        thread_mutex;
 
+  gfloat           non_keyframe_ratio;
+  gfloat           keyframe_ratio;
   guint8           active_subflow_num;
+
 };
 
 struct _StreamSplitterClass{
@@ -57,7 +66,7 @@ struct _StreamSplitterClass{
 //class functions
 void stream_splitter_add_path(StreamSplitter * this, guint8 subflow_id, MPRTPSPath *path);
 void stream_splitter_rem_path(StreamSplitter * this, guint8 subflow_id);
-gboolean stream_splitter_process_rtp_packet(StreamSplitter* this, GstRTPBuffer* rtp);
+MPRTPSPath* stream_splitter_get_next_path(StreamSplitter* this, GstBuffer* buf);
 void stream_splitter_set_rtp_ext_header_id(StreamSplitter* this, guint8 ext_header_id);
 void stream_splitter_setup_sending_bid(StreamSplitter* this, guint8 subflow_id, guint32 bid);
 void stream_splitter_commit_changes(StreamSplitter *this);

@@ -42,10 +42,10 @@ typedef enum
 } MPRTPSubflowFlags;
 
 typedef enum{
-  MPRTPS_PATH_STATE_NON_CONGESTED,
-  MPRTPS_PATH_STATE_MIDDLY_CONGESTED,
-  MPRTPS_PATH_STATE_CONGESTED,
-  MPRTPS_PATH_STATE_PASSIVE,
+  MPRTPS_PATH_STATE_NON_CONGESTED    = 1,
+  MPRTPS_PATH_STATE_MIDDLY_CONGESTED = 2,
+  MPRTPS_PATH_STATE_CONGESTED        = 4,
+  MPRTPS_PATH_STATE_PASSIVE          = 8,
 }MPRTPSPathState;
 
 #define MAX_INT32_POSPART 32767
@@ -66,10 +66,16 @@ struct _MPRTPSPath
 
   GstClockTime  sent_passive;
   GstClockTime  sent_active;
+  GstClockTime  sent_non_congested;
+  GstClockTime  sent_middly_congested;
+  GstClockTime  sent_congested;
 
-  guint8    sent_octets[MAX_INT32_POSPART];
-  guint16   sent_octets_read;
-  guint16   sent_octets_write;
+  guint8        sent_octets[MAX_INT32_POSPART];
+  guint16       sent_octets_read;
+  guint16       sent_octets_write;
+  guint32       max_bytes_per_ms;
+  GstClockTime  last_packet_sent_time;
+  guint32       last_sent_payload_bytes;
 };
 
 struct _MPRTPSPathClass
@@ -97,9 +103,15 @@ guint8 mprtps_path_get_id (MPRTPSPath * this);
 guint32 mprtps_path_get_total_sent_packet_num (MPRTPSPath * this);
 void mprtps_path_process_rtp_packet (MPRTPSPath * this, guint ext_header_id, GstRTPBuffer * rtp);
 guint32 mprtps_path_get_total_sent_payload_bytes (MPRTPSPath * this);
+
 guint32 mprtps_path_get_sent_octet_sum_for(MPRTPSPath *this, guint32 amount);
 MPRTPSPathState mprtps_path_get_state (MPRTPSPath * this);
 void mprtps_path_set_state (MPRTPSPath * this, MPRTPSPathState state);
 GstClockTime mprtps_path_get_time_sent_to_passive(MPRTPSPath *this);
+GstClockTime mprtps_path_get_time_sent_to_middly_congested (MPRTPSPath * this);
+GstClockTime mprtps_path_get_time_sent_to_non_congested (MPRTPSPath * this);
+GstClockTime mprtps_path_get_time_sent_to_congested (MPRTPSPath * this);
+void mprtps_path_set_max_bytes_per_ms(MPRTPSPath *this, guint32 bytes);
+gboolean mprtps_path_is_overused (MPRTPSPath * this);
 G_END_DECLS
 #endif /* MPRTPSPATH_H_ */

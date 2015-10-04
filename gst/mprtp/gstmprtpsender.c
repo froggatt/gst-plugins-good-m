@@ -122,6 +122,7 @@ _select_subflow (GstMprtpsender * this, guint8 id, Subflow ** result);
 enum
 {
   PROP_0,
+  PROP_EXT_HEADER_ID,
   PROP_PIVOT_OUTPAD,
 };
 
@@ -184,13 +185,34 @@ gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad, GstObject * parent,
   gboolean result = TRUE;
   GList *it;
   Subflow *subflow;
+  const gchar *stream_id;
+  const GstSegment *segment;
+  GstCaps *caps;
 
   this = GST_MPRTPSENDER (parent);
   THIS_WRITELOCK (this);
-
   switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_STREAM_START:
+      if (this->event_stream_start != NULL) {
+        gst_event_unref (this->event_stream_start);
+      }
+      gst_event_parse_stream_start (event, &stream_id);
+      this->event_stream_start = gst_event_new_stream_start (stream_id);
+      goto sending;
     case GST_EVENT_SEGMENT:
+      if (this->event_segment != NULL) {
+        gst_event_unref (this->event_segment);
+      }
+      gst_event_parse_segment (event, &segment);
+      this->event_segment = gst_event_new_segment (segment);
+      goto sending;
     case GST_EVENT_CAPS:
+      if (this->event_caps != NULL) {
+        gst_event_unref (this->event_caps);
+      }
+      gst_event_parse_caps (event, &caps);
+      this->event_caps = gst_event_new_caps (caps);
+    sending:
       for (subflow = NULL, it = this->subflows; it != NULL; it = it->next) {
         subflow = it->data;
         result &= gst_pad_push_event (subflow->outpad, gst_event_copy (event));
@@ -239,6 +261,12 @@ gst_mprtpsender_class_init (GstMprtpsenderClass * klass)
       GST_DEBUG_FUNCPTR (gst_mprtpsender_change_state);
   element_class->query = GST_DEBUG_FUNCPTR (gst_mprtpsender_query);
 
+  g_object_class_install_property (gobject_class, PROP_EXT_HEADER_ID,
+      g_param_spec_uint ("ext-header-id",
+          "Set or get the id for the RTP extension",
+          "Sets or gets the id for the extension header the MpRTP based on", 0,
+          15, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_PIVOT_OUTPAD,
       g_param_spec_uint ("pivot-outpad",
           "The id of the subflow sets to pivot for non-mp packets.",
@@ -283,6 +311,9 @@ gst_mprtpsender_init (GstMprtpsender * mprtpsender)
 
   mprtpsender->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   mprtpsender->pivot_outpad = NULL;
+  mprtpsender->event_segment = NULL;
+  mprtpsender->event_caps = NULL;
+  mprtpsender->event_stream_start = NULL;
   //mprtpsender->events = g_queue_new();
   g_rw_lock_init (&mprtpsender->rwmutex);
 }
@@ -297,6 +328,11 @@ gst_mprtpsender_set_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "set_property");
 
   switch (property_id) {
+    case PROP_EXT_HEADER_ID:
+      THIS_WRITELOCK (this);
+      this->ext_header_id = (guint8) g_value_get_uint (value);
+      THIS_WRITEUNLOCK (this);
+      break;
     case PROP_PIVOT_OUTPAD:
       THIS_WRITELOCK (this);
       subflow_id = (guint8) g_value_get_uint (value);
@@ -317,11 +353,16 @@ void
 gst_mprtpsender_get_property (GObject * object, guint property_id,
     GValue * value, GParamSpec * pspec)
 {
-  GstMprtpsender *mprtpsender = GST_MPRTPSENDER (object);
+  GstMprtpsender *this = GST_MPRTPSENDER (object);
 
-  GST_DEBUG_OBJECT (mprtpsender, "get_property");
+  GST_DEBUG_OBJECT (this, "get_property");
 
   switch (property_id) {
+    case PROP_EXT_HEADER_ID:
+      THIS_READLOCK (this);
+      g_value_set_uint (value, (guint) this->ext_header_id);
+      THIS_READUNLOCK (this);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -387,9 +428,9 @@ gst_mprtpsender_request_new_pad (GstElement * element, GstPadTemplate * templ,
   this->subflows = g_list_prepend (this->subflows, subflow);
   THIS_WRITEUNLOCK (this);
 
-  gst_element_add_pad (GST_ELEMENT (this), srcpad);
-
   gst_pad_set_active (srcpad, TRUE);
+
+  gst_element_add_pad (GST_ELEMENT (this), srcpad);
 
   return srcpad;
 }
@@ -460,16 +501,16 @@ gst_mprtpsender_query (GstElement * element, GstQuery * query)
 static GstPadLinkReturn
 gst_mprtpsender_src_link (GstPad * pad, GstObject * parent, GstPad * peer)
 {
-  GstMprtpsender *mprtpsender;
+  GstMprtpsender *this;
   GList *it;
   Subflow *subflow;
   GstPadLinkReturn result = GST_PAD_LINK_OK;
 
-  mprtpsender = GST_MPRTPSENDER (parent);
-  GST_DEBUG_OBJECT (mprtpsender, "link");
-  THIS_READLOCK (mprtpsender);
+  this = GST_MPRTPSENDER (parent);
+  GST_DEBUG_OBJECT (this, "link");
+  THIS_READLOCK (this);
 
-  for (subflow = NULL, it = mprtpsender->subflows; it != NULL; it = it->next) {
+  for (subflow = NULL, it = this->subflows; it != NULL; it = it->next) {
     subflow = it->data;
     if (subflow->outpad == pad) {
       break;
@@ -480,9 +521,19 @@ gst_mprtpsender_src_link (GstPad * pad, GstObject * parent, GstPad * peer)
     goto gst_mprtpsender_src_link_done;
   }
   subflow->state = 0;
+  if (this->event_stream_start != NULL) {
+    gst_pad_push_event (subflow->outpad,
+        gst_event_copy (this->event_stream_start));
+  }
+  if (this->event_caps != NULL) {
+    gst_pad_push_event (subflow->outpad, gst_event_copy (this->event_caps));
+  }
+  if (this->event_segment != NULL) {
+    gst_pad_push_event (subflow->outpad, gst_event_copy (this->event_segment));
+  }
 
 gst_mprtpsender_src_link_done:
-  THIS_READUNLOCK (mprtpsender);
+  THIS_READUNLOCK (this);
   return result;
 }
 
@@ -574,6 +625,10 @@ _get_packet_mptype (GstMprtpsender * this,
     if (subflow_id) {
       subflow_infos = (MPRTPSubflowHeaderExtension *) pointer;
       *subflow_id = subflow_infos->id;
+
+      //SRTP validation - it must be fail
+//      gst_rtp_buffer_add_extension_onebyte_header (&rtp, 2,
+//            (gpointer) subflow_infos, sizeof (*subflow_infos));
     }
     gst_rtp_buffer_unmap (&rtp);
     result = PACKET_IS_MPRTP;

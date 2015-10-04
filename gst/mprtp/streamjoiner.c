@@ -118,7 +118,9 @@ stream_joiner_run (void *data)
   guint64 max_path_skew = 0;
   GstClockID clock_id;
   gboolean new_skew_added = FALSE;
+#ifdef DEBUG_DATA_ON
   gboolean stat_produce = FALSE;
+#endif
 
   THIS_WRITELOCK (this);
   now = gst_clock_get_time (this->sysclock);
@@ -129,7 +131,9 @@ stream_joiner_run (void *data)
   }
   L = this->queued;
   this->queued = NULL;
+#ifdef DEBUG_DATA_ON
   stat_produce = GST_SECOND < now - this->last_stat_produce;
+#endif
   g_hash_table_iter_init (&iter, this->subflows);
   while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
     //printf("key %u ---> %u\n", (guint8)*subflow_id, (MPRTPSPath*)*subflow);
@@ -152,13 +156,14 @@ stream_joiner_run (void *data)
       }
       new_skew_added = TRUE;
     }
-
+#ifdef DEBUG_DATA_ON
     if (stat_produce) {
       g_print ("On subflow %d received packet num is: %d\n",
           subflow->id, subflow->received_packets);
       subflow->received_packets = 0;
       this->last_stat_produce = now;
     }
+#endif
   }
 
 
