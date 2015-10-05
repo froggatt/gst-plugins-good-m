@@ -50,17 +50,16 @@ struct _Subflow
   guint8 id;
   GstClock *sysclock;
   GstClockTime joined_time;
-  GstClockTime riport_time;
-  GstClockTime riport_interval_time;
-  gboolean rr_started;
-//  guint32 packet_received;
-  gfloat media_rate;
+  GstClockTime normal_report_time;
+  GstClockTime last_rr_report_sent_time;
+  gboolean first_report_calculated;
+  gdouble media_rate;
+  gdouble avg_rtcp_size;
   gboolean allow_early;
-  gboolean paths_congestion_riport_is_started;
-  gboolean paths_changing_riport_started_time;
+  gboolean faster_reporting_started_time;
   guint packet_limit_to_riport;
   gboolean urgent_riport_is_requested;
-  GstClockTime last_riport_sent_time;
+
   GstClockTime LSR;
   guint16 HSN;
 
@@ -68,6 +67,8 @@ struct _Subflow
   guint16 actual_total_lost_packet_num;
   guint32 last_total_late_discarded_bytes;
   guint32 actual_total_late_discarded_bytes;
+  guint32 last_total_received_packet_num;
+  guint32 actual_total_received_packet_num;
 };
 
 //----------------------------------------------------------------------
@@ -76,8 +77,10 @@ struct _Subflow
 
 static void refctrler_finalize (GObject * object);
 static void refctrler_run (void *data);
-void _send_mprtcp_xr_block (RcvEventBasedController * this, Subflow * subflow);
-void _send_mprtcp_rr_block (RcvEventBasedController * this, Subflow * subflow);
+static GstBuffer *_get_mprtcp_xr_block (RcvEventBasedController * this,
+    Subflow * subflow, guint16 * block_length);
+static GstBuffer *_get_mprtcp_rr_block (RcvEventBasedController * this,
+    Subflow * subflow, guint16 * block_length);
 
 void _setup_xr_rfc2743_late_discarded_riport (Subflow * this,
     GstRTCPXR_RFC7243 * xr, guint32 ssrc);
@@ -88,6 +91,9 @@ static void _report_processing_selector (Subflow * this,
     GstMPRTCPSubflowBlock * block);
 static void _report_processing_srblock_processor (Subflow * subflow,
     GstRTCPSRBlock * srb);
+void _recalc_report_time (Subflow * this);
+gboolean _do_report_now (Subflow * subflow);
+
 static guint32 _uint32_diff (guint32 a, guint32 b);
 static void refctrler_rem_path (gpointer controller_ptr, guint8 subflow_id);
 static void refctrler_add_path (gpointer controller_ptr, guint8 subflow_id,
@@ -171,18 +177,44 @@ refctrler_run (void *data)
         mprtpr_path_get_total_late_discarded_bytes_num (path);
     subflow->actual_total_lost_packet_num =
         mprtpr_path_get_total_packet_losts_num (path);
+    subflow->actual_total_received_packet_num =
+        mprtpr_path_get_total_received_packets_num (path);
 
-    if (this->riport_is_flowable) {
-      _send_mprtcp_rr_block (this, subflow);
+    if (this->riport_is_flowable && _do_report_now (subflow)) {
+      guint16 report_length = 0;
+      guint16 block_length = 0;
+      GstBuffer *block;
 
+      block = _get_mprtcp_rr_block (this, subflow, &block_length);
+      report_length += block_length;
       if (subflow->actual_total_late_discarded_bytes !=
           subflow->last_total_late_discarded_bytes) {
-        _send_mprtcp_xr_block (this, subflow);
+        GstBuffer *xr;
+        xr = _get_mprtcp_xr_block (this, subflow, &block_length);
+        block = gst_buffer_append (block, xr);
+        report_length += block_length;
       }
+      report_length += 12 /*MPRTCP REPOR HEADER */  +
+          (28 << 3) /*UDP Header overhead */ ;
+
+
+      this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, block);
+
+
+      subflow->avg_rtcp_size +=
+          ((gfloat) report_length - subflow->avg_rtcp_size) / 4.;
+
+      subflow->last_total_late_discarded_bytes =
+          subflow->actual_total_late_discarded_bytes;
+      subflow->last_total_lost_packet_num =
+          subflow->actual_total_lost_packet_num;
+      subflow->last_total_received_packet_num =
+          subflow->actual_total_received_packet_num;
+
+      subflow->last_rr_report_sent_time = now;
+      _recalc_report_time (subflow);
     }
-    subflow->last_total_late_discarded_bytes =
-        subflow->actual_total_late_discarded_bytes;
-    subflow->last_total_lost_packet_num = subflow->actual_total_lost_packet_num;
+
   }
 
 //done:
@@ -196,7 +228,6 @@ refctrler_run (void *data)
   gst_clock_id_unref (clock_id);
   //clockshot;
 }
-
 
 
 void
@@ -368,16 +399,14 @@ make_subflow (guint8 id, MPRTPRPath * path)
 void
 reset_subflow (Subflow * this)
 {
-  this->riport_time = 0;
-  this->riport_interval_time = 0;
-  this->rr_started = FALSE;
-  this->media_rate = 0.;
+  this->normal_report_time = 0;
+  this->first_report_calculated = FALSE;
+  this->media_rate = 64000.;
+  this->avg_rtcp_size = 1024.;
   this->allow_early = TRUE;
-  this->paths_congestion_riport_is_started = FALSE;
-  this->paths_changing_riport_started_time = 0;
-  this->packet_limit_to_riport = 0;
+  this->faster_reporting_started_time = 0;
+  this->packet_limit_to_riport = 10;
   this->urgent_riport_is_requested = FALSE;
-  this->last_riport_sent_time = 0;
   this->LSR = 0;
   this->HSN = 0;
 }
@@ -393,8 +422,9 @@ _uint16_diff (guint16 a, guint16 b)
   return ~((guint16) (a - b));
 }
 
-void
-_send_mprtcp_rr_block (RcvEventBasedController * this, Subflow * subflow)
+GstBuffer *
+_get_mprtcp_rr_block (RcvEventBasedController * this, Subflow * subflow,
+    guint16 * buf_length)
 {
   GstMPRTCPSubflowBlock block;
   GstRTCPRR *rr;
@@ -414,12 +444,17 @@ _send_mprtcp_rr_block (RcvEventBasedController * this, Subflow * subflow)
   dataptr = g_malloc0 (length);
   memcpy (dataptr, &block, length);
   buf = gst_buffer_new_wrapped (dataptr, length);
-  this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
+  if (buf_length) {
+    *buf_length = length;
+  }
+  //gst_print_rtcp_rr(rr);
+  return buf;
 }
 
 
-void
-_send_mprtcp_xr_block (RcvEventBasedController * this, Subflow * subflow)
+GstBuffer *
+_get_mprtcp_xr_block (RcvEventBasedController * this, Subflow * subflow,
+    guint16 * buf_length)
 {
   GstMPRTCPSubflowBlock block;
   GstRTCPXR_RFC7243 *xr;
@@ -439,7 +474,10 @@ _send_mprtcp_xr_block (RcvEventBasedController * this, Subflow * subflow)
   dataptr = g_malloc0 (length);
   memcpy (dataptr, &block, length);
   buf = gst_buffer_new_wrapped (dataptr, length);
-  this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
+  if (buf_length) {
+    *buf_length = length;
+  }
+  return buf;
 }
 
 
@@ -463,7 +501,7 @@ _setup_xr_rfc2743_late_discarded_riport (Subflow * this,
 void
 _setup_rr_riport (Subflow * this, GstRTCPRR * rr, guint32 ssrc)
 {
-  GstClockTime ntptime;
+  GstClockTime now;
   guint8 fraction_lost;
   guint32 ext_hsn, LSR, DLSR;
   guint16 expected;
@@ -471,11 +509,12 @@ _setup_rr_riport (Subflow * this, GstRTCPRR * rr, guint32 ssrc)
   guint16 HSN;
   guint16 cycle_num;
   guint32 jitter;
-  guint16 lost_packet_num, diff_lost_packet_num;
+  guint16 diff_lost_packet_num;
+  gdouble received_bytes, interval;
 
   gst_rtcp_header_change (&rr->header, NULL, NULL, NULL, NULL, NULL, &ssrc);
 
-  ntptime = gst_clock_get_time (this->sysclock);
+  now = gst_clock_get_time (this->sysclock);
   path = this->path;
 
   cycle_num = mprtpr_path_get_cycle_num (path);
@@ -484,36 +523,117 @@ _setup_rr_riport (Subflow * this, GstRTCPRR * rr, guint32 ssrc)
   HSN = mprtpr_path_get_highest_sequence_number (path);
   expected = _uint16_diff (this->HSN, HSN);
   this->HSN = HSN;
-
-  lost_packet_num = mprtpr_path_get_total_packet_losts_num (path);
   diff_lost_packet_num =
-      _uint16_diff (this->actual_total_lost_packet_num, lost_packet_num);
-  this->actual_total_lost_packet_num = lost_packet_num;
+      _uint16_diff (this->last_total_lost_packet_num,
+      this->actual_total_lost_packet_num);
   fraction_lost =
-      (256.0 * (gfloat) diff_lost_packet_num) / ((gfloat) (expected));
+      (256. * (gfloat) diff_lost_packet_num) / ((gfloat) (expected));
 
   ext_hsn = (((guint32) cycle_num) << 16) | ((guint32) HSN);
 
   LSR = (guint32) (this->LSR >> 16);
 
-  if (this->LSR == 0 || ntptime < this->LSR) {
+  if (this->LSR == 0 || now < this->LSR) {
     DLSR = 0;
   } else {
     DLSR = (guint32) GST_TIME_AS_MSECONDS ((GstClockTime)
-        GST_CLOCK_DIFF (this->LSR, ntptime));
+        GST_CLOCK_DIFF (this->LSR, now));
   }
   gst_rtcp_rr_add_rrb (rr, 0,
       fraction_lost, this->actual_total_lost_packet_num, ext_hsn, jitter, LSR,
       DLSR);
+
+  received_bytes = (gdouble) mprtpr_path_get_total_bytes_received (path);
+  interval =
+      (gdouble) GST_TIME_AS_SECONDS (now - this->last_rr_report_sent_time);
+  if (interval < 1.) {
+    interval = 1.;
+  }
+  this->media_rate = received_bytes / interval;
   //reset
 
   //  g_print("this->media_bw = %f * %f / %f * 1./1000. = %f\n",
   //                this->avg_rtp_size, (gdouble)this->packet_received,
   //                (gdouble) (GST_TIME_AS_MSECONDS(ntptime - this->last_riport_sent_time)), this->media_bw_avg);
-
-  this->last_riport_sent_time = ntptime;
 }
 
+
+
+gboolean
+_do_report_now (Subflow * this)
+{
+  gboolean result;
+  GstClockTime now;
+
+  now = gst_clock_get_time (this->sysclock);
+  if (!this->first_report_calculated) {
+    this->urgent_riport_is_requested = TRUE;
+    this->first_report_calculated = TRUE;
+    result = FALSE;
+    goto done;
+  }
+  if (this->urgent_riport_is_requested && this->allow_early) {
+    this->allow_early = FALSE;
+    result = TRUE;
+    goto done;
+  }
+
+  if (this->normal_report_time <= now) {
+    guint32 received;
+    received = _uint32_diff (this->last_total_received_packet_num,
+        this->actual_total_received_packet_num);
+    if (received < this->packet_limit_to_riport) {
+      result = now - 7 * GST_SECOND < this->last_rr_report_sent_time;
+      goto done;
+    }
+    result = TRUE;
+    goto done;
+  }
+  result = FALSE;
+done:
+  return result;
+}
+
+void
+_recalc_report_time (Subflow * this)
+{
+  gdouble interval;
+  GstClockTime now;
+  now = gst_clock_get_time (this->sysclock);
+
+  interval = rtcp_interval (1,  //senders
+      2,                        //members
+      this->media_rate > 0. ? this->media_rate : 64000.,        //rtcp_bw
+      0,                        //we_sent
+      this->avg_rtcp_size,      //avg_rtcp_size
+      0);                       //initial
+  if (this->urgent_riport_is_requested) {
+    this->faster_reporting_started_time = now;
+    this->urgent_riport_is_requested = FALSE;
+    if (4. < interval) {
+      interval = 4. * (g_random_double () + .5);
+    }
+    goto done;
+  }
+  this->allow_early = TRUE;
+  if (this->faster_reporting_started_time < now - 15 * GST_SECOND) {
+    interval /= 2.;
+  } else if (now - 20 * GST_SECOND < this->faster_reporting_started_time) {
+    interval *= 1.5;
+  }
+
+
+done:
+  if (interval < 1.) {
+    interval = 1. + g_random_double ();
+  } else if (7.5 < interval) {
+    interval = 5. * (g_random_double () + .5);
+  }
+//  g_print("Next interval for subflow %d: %f\n", this->id, interval);
+//  this->normal_report_time = now +
+//          (GstClockTime)interval * GST_SECOND;
+  return;
+}
 
 
 

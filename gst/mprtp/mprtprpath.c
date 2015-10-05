@@ -154,6 +154,16 @@ mprtpr_path_get_total_late_discarded_bytes_num (MPRTPRPath * this)
   return result;
 }
 
+guint32
+mprtpr_path_get_total_bytes_received (MPRTPRPath * this)
+{
+  guint32 result;
+  THIS_READLOCK (this);
+  result = this->total_received_bytes;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
 guint64
 mprtpr_path_get_total_received_packets_num (MPRTPRPath * this)
 {
@@ -385,14 +395,17 @@ mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer * buf,
     ++this->cycle_num;
   }
 
+  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
+  payload_size = gst_rtp_buffer_get_payload_len (&rtp);
+  gst_rtp_buffer_unmap (&rtp);
+
   if (_cmp_seq (this->HSN, subflow_sequence) > 0) {
     ++this->total_late_discarded;
-    gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
-    payload_size = gst_rtp_buffer_get_payload_len (&rtp);
     this->total_late_discarded_bytes += payload_size;
-    gst_rtp_buffer_unmap (&rtp);
     goto done;
   }
+
+  this->total_received_bytes += payload_size + (28 << 3);
   if (subflow_sequence == (guint16) (this->actual_seq + 1)) {
     ++this->received_since_cycle_is_increased;
     this->result = g_list_prepend (this->result, buf);

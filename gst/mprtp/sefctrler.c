@@ -63,7 +63,7 @@ struct _Subflow
   guint16 HSSN_diff;
   GstClock *sysclock;
 
-  GstClockTime riport_interval_time;
+  GstClockTime report_interval_time;
   GstClockTime next_riport_time;
   gboolean riport_check_started;
   gboolean first_reicever_riport_arrived;
@@ -81,10 +81,12 @@ struct _Subflow
   GstClockTime distortion_happened;
   GstClockTime trial_happened;
   gfloat goodput;
-  guint32 media_rate;
+  //guint32 media_rate;
   gfloat sr_riport_bw;
   gdouble avg_rtcp_size;
 
+  gboolean first_report_calculated;
+  GstClockTime normal_report_time;
 
   guint32 late_discarded_bytes;
   guint32 late_discarded_bytes_sum;
@@ -123,7 +125,8 @@ static void
 _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb);
 static void
 _riport_processing_xrblock_processor (Subflow * this, GstRTCPXR_RFC7243 * xrb);
-
+GstBuffer *_get_mprtcp_sr_block (SndEventBasedController * this,
+    Subflow * subflow, guint16 * buf_length);
 Event _check_state (Subflow * this);
 static void _setup_sr_riport (Subflow * this, GstRTCPSR * sr, guint32 ssrc);
 static void _fire (SndEventBasedController * this, Subflow * subflow,
@@ -134,6 +137,9 @@ static void _validate_cross_reports_data (Subflow * this);
 static gfloat _get_alpha (Subflow * this);
 static gfloat _get_beta (Subflow * this);
 static gfloat _get_gamma (Subflow * this);
+
+static gboolean _do_report_now (Subflow * this);
+static void _recalc_report_time (Subflow * this);
 
 static Event _check_riport_timeout (Subflow * this);
 static void sefctrler_riport_can_flow (gpointer this);
@@ -212,12 +218,8 @@ sefctrler_run (void *data)
   gfloat goodput_mc_sum = 0.;
   MPRTPSPath *path;
   GstBuffer *buf;
+  guint16 report_length = 0;
   GstClockID clock_id;
-  gpointer dataptr;
-  GstMPRTCPSubflowBlock block;
-  GstRTCPSR *sr;
-  guint8 block_length;
-  guint16 length;
 
   this = SEFCTRLER (data);
   THIS_WRITELOCK (this);
@@ -233,20 +235,17 @@ sefctrler_run (void *data)
       continue;
     }
 
-    if (this->riport_is_flowable) {
-      gst_mprtcp_block_init (&block);
-      sr = gst_mprtcp_riport_block_add_sr (&block);
-      _setup_sr_riport (subflow, sr, this->ssrc);
-      gst_rtcp_header_getdown (&sr->header, NULL, NULL, NULL, NULL, &length,
-          NULL);
-      block_length = (guint8) length + 1;
-      gst_mprtcp_block_setup (&block.info, MPRTCP_BLOCK_TYPE_RIPORT,
-          block_length, (guint16) subflow->id);
-      length = (block_length + 1) << 2;
-      dataptr = g_malloc0 (length);
-      memcpy (dataptr, &block, length);
-      buf = gst_buffer_new_wrapped (dataptr, length);
+    if (this->riport_is_flowable && _do_report_now (subflow)) {
+      buf = _get_mprtcp_sr_block (this, subflow, &report_length);
       this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, buf);
+
+      report_length += 12 /*MPRTCP REPOR HEADER */  +
+          (28 << 3) /*UDP Header overhead */ ;
+
+      subflow->avg_rtcp_size +=
+          ((gfloat) report_length - subflow->avg_rtcp_size) / 4.;
+      _recalc_report_time (subflow);
+
     }
 
     path_state = mprtps_path_get_state (path);
@@ -287,6 +286,9 @@ sefctrler_run (void *data)
   gst_clock_id_unref (clock_id);
   //clockshot;
 }
+
+
+
 
 
 void
@@ -405,12 +407,11 @@ sefctrler_receive_mprtcp (gpointer ptr, GstBuffer * buf)
   }
   _report_processing_selector (subflow, block);
 
-  g_print ("subflow: %d goodput: %f\n", subflow->id, subflow->goodput);
+  //g_print ("subflow: %d goodput: %f\n", subflow->id, subflow->goodput);
   //validate and fire.
-  _validate_cross_reports_data (subflow);
   event = _check_state (subflow);
-  g_print ("Subflow: %d Actual state: %d event: %d\n",
-      subflow->id, mprtps_path_get_state (subflow->path), event);
+//  g_print ("Subflow: %d Actual state: %d event: %d\n",
+//      subflow->id, mprtps_path_get_state (subflow->path), event);
   if (event != EVENT_FI) {
     _fire (this, subflow, event);
   }
@@ -479,7 +480,7 @@ reset_subflow (Subflow * this)
 {
   this->HSSN = 0;
   this->riport_check_started = FALSE;
-  this->riport_interval_time = 0;
+  this->report_interval_time = 0;
   this->next_riport_time = 0;
   this->riport_check_started = FALSE;
   this->first_reicever_riport_arrived = FALSE;
@@ -490,7 +491,6 @@ reset_subflow (Subflow * this)
   this->last_receiver_riport_time = 0;
   this->last_xr_rfc7243_riport_time = 0;
   this->last_sender_riport_time = 0;
-  this->media_rate = 0.;
   this->goodput = 0;
   this->late_discarded_bytes = 0;
   this->late_discarded_bytes_sum = 0;
@@ -539,8 +539,6 @@ _report_processing_selector (Subflow * this, GstMPRTCPSubflowBlock * block)
 
   if (pt == (guint8) GST_RTCP_TYPE_RR) {
     _riport_processing_rrblock_processor (this, &block->receiver_riport.blocks);
-    _validate_cross_reports_data (this);
-    this->goodput = _get_goodput (this);
     this->last_receiver_riport_time = now;
   } else if (pt == (guint8) GST_RTCP_TYPE_XR) {
     _riport_processing_xrblock_processor (this, &block->xr_rfc7243_riport);
@@ -548,6 +546,7 @@ _report_processing_selector (Subflow * this, GstMPRTCPSubflowBlock * block)
   } else {
     GST_WARNING ("Sending flow control can not process report type %d.", pt);
   }
+
 }
 
 void
@@ -558,7 +557,6 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
   guint32 LSR_read, DLSR_read, HSSN_read;
   guint16 HSN_diff;
   guint16 HSSN;
-  gfloat lost_rate;
   guint8 fraction_lost;
   //RiportProcessorRRProcessor *this_stage = _riport_processing_rrprocessor_;
 
@@ -605,16 +603,21 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
     this->consecutive_lost = 0;
     ++this->consecutive_non_lost;
   }
-  this->lost_rate = lost_rate = ((gfloat) fraction_lost) / 256.;
+  _validate_cross_reports_data (this);
+
+  this->lost_rate = ((gfloat) fraction_lost) / 256.;
+  this->goodput = _get_goodput (this);
   this->first_reicever_riport_arrived = TRUE;
 
-//gst_print_rtcp_rrb(rrb);
+//  g_print("%d", this->id);
+//  gst_print_rtcp_rrb(rrb);
   //Debug print
-//  g_print ("Receiver riport is processed, the calculations are the following:\n"
-//      "lost_rate: %f\n"
-//      "consecutive_lost: %d\n"
-//      "consecutive_non_lost: %d\n"
+//  g_print ("Receiver riport for subflow %d is processed\n"
+//      "lost_rate: %f; "
+//      "consecutive_lost: %d; "
+//      "consecutive_non_lost: %d; "
 //      "RTT (in ms): %lu\n",
+//      this->id,
 //      this->lost_rate,
 //      this->consecutive_lost,
 //      this->consecutive_non_lost, GST_TIME_AS_MSECONDS (this->RTT));
@@ -672,41 +675,56 @@ _recalc (SndEventBasedController * this)
   Subflow *subflow;
   MPRTPSPath *path;
   gboolean is_non_congested;
-  gboolean is_non_lossy;
   gfloat max_bid = 1000.;
   gfloat allocated_bid = 0.;
   gfloat sending_bid;
 
   g_print ("RECALCULATION STARTED\n");
 
-  g_hash_table_iter_init (&iter, this->subflows);
-  while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
-    subflow = (Subflow *) val;
-    path = subflow->path;
-    if (!mprtps_path_is_active (path)) {
-      continue;
-    }
+  if (this->goodput_c_sum > 0. || this->goodput_mc_sum > 0.) {
+    g_hash_table_iter_init (&iter, this->subflows);
+    while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
+      subflow = (Subflow *) val;
+      path = subflow->path;
+      if (!mprtps_path_is_active (path) ||
+          mprtps_path_get_state (path) == MPRTPS_PATH_STATE_NON_CONGESTED) {
+        continue;
+      }
 
-    is_non_congested = mprtps_path_is_non_congested (path);
-    is_non_lossy = mprtps_path_is_non_lossy (path);
-    if (is_non_congested && is_non_lossy) {
+      is_non_congested = mprtps_path_is_non_congested (path);
+      if (is_non_congested) {
+        //not congested but lossy
+        sending_bid = MIN (subflow->goodput / this->goodput_mc_sum * max_bid,
+            subflow->goodput * (1. - _get_beta (subflow)));
+      } else {
+        //congested
+        sending_bid = MIN (subflow->goodput / this->goodput_c_sum * max_bid,
+            subflow->goodput * (1. - _get_alpha (subflow)));
+      }
+      allocated_bid += sending_bid;
+      stream_splitter_setup_sending_bid (this->splitter, subflow->id,
+          (guint32) (sending_bid + .5));
+    }
+  }
+
+  if (this->goodput_nc_sum > 0.) {
+    g_hash_table_iter_init (&iter, this->subflows);
+    while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
+      subflow = (Subflow *) val;
+      path = subflow->path;
+      if (!mprtps_path_is_active (path) ||
+          mprtps_path_get_state (path) != MPRTPS_PATH_STATE_NON_CONGESTED) {
+        continue;
+      }
       //not congested, not lossy
       sending_bid = subflow->goodput / this->goodput_nc_sum *
           (max_bid - allocated_bid) * _get_gamma (subflow);
-    } else if (is_non_congested) {
-      //not congested but lossy
-      sending_bid = MIN (subflow->goodput / this->goodput_mc_sum * max_bid,
-          subflow->goodput * (1. - _get_beta (subflow)));
-    } else {
-      //congested
-      sending_bid = MIN (subflow->goodput / this->goodput_c_sum * max_bid,
-          subflow->goodput * (1. - _get_alpha (subflow)));
-    }
-    allocated_bid += sending_bid;
-    stream_splitter_setup_sending_bid (this->splitter, subflow->id,
-        (guint32) (sending_bid + .5));
-  }
 
+      allocated_bid += sending_bid;
+      stream_splitter_setup_sending_bid (this->splitter, subflow->id,
+          (guint32) (sending_bid + .5));
+    }
+  }
 }
 
 gfloat
@@ -846,11 +864,11 @@ _check_state (Subflow * this)
         result = EVENT_LATE;
         goto done;
       }
-      if (this->consecutive_lost > 2 && this->consecutive_discarded > 2) {
+      if (this->consecutive_lost > 2 && this->consecutive_discarded > 1) {
         result = EVENT_CONGESTION;
         goto done;
       }
-      if (this->consecutive_lost > 2 && this->consecutive_non_discarded > 2) {
+      if (this->consecutive_lost > 2) {
         result = EVENT_LOSSY;
         goto done;
       }
@@ -1016,6 +1034,89 @@ _get_goodput (Subflow * this)
 
   return result;
 }
+
+
+
+gboolean
+_do_report_now (Subflow * this)
+{
+  gboolean result;
+  GstClockTime now;
+  gdouble interval;
+
+  now = gst_clock_get_time (this->sysclock);
+  if (!this->first_report_calculated) {
+    interval = rtcp_interval (1,        //senders
+        2,                      //members
+        this->goodput > 0. ? this->goodput : 64000.,    //rtcp_bw
+        1,                      //we_sent
+        this->avg_rtcp_size,    //avg_rtcp_size
+        1);                     //initial
+
+    this->first_report_calculated = TRUE;
+    result = FALSE;
+    this->normal_report_time = now + (GstClockTime) interval *GST_SECOND;
+    goto done;
+  }
+
+  if (this->normal_report_time <= now) {
+    result = TRUE;
+    goto done;
+  }
+  result = FALSE;
+done:
+  return result;
+}
+
+void
+_recalc_report_time (Subflow * this)
+{
+  gdouble interval;
+  GstClockTime now;
+  now = gst_clock_get_time (this->sysclock);
+
+  interval = rtcp_interval (1,  //senders
+      2,                        //members
+      this->goodput > 0. ? this->goodput : 64000.,      //rtcp_bw
+      1,                        //we_sent
+      this->avg_rtcp_size,      //avg_rtcp_size
+      0);                       //initial
+
+//  g_print("interval: %f, %f, %f\n", this->goodput, this->avg_rtcp_size, interval);
+
+  this->normal_report_time = now + (GstClockTime) interval *GST_SECOND;
+  return;
+}
+
+
+GstBuffer *
+_get_mprtcp_sr_block (SndEventBasedController * this,
+    Subflow * subflow, guint16 * buf_length)
+{
+  GstMPRTCPSubflowBlock block;
+  guint8 block_length;
+  guint16 length;
+  gpointer dataptr;
+  GstRTCPSR *sr;
+  GstBuffer *result;
+
+  gst_mprtcp_block_init (&block);
+  sr = gst_mprtcp_riport_block_add_sr (&block);
+  _setup_sr_riport (subflow, sr, this->ssrc);
+  gst_rtcp_header_getdown (&sr->header, NULL, NULL, NULL, NULL, &length, NULL);
+  block_length = (guint8) length + 1;
+  gst_mprtcp_block_setup (&block.info, MPRTCP_BLOCK_TYPE_RIPORT,
+      block_length, (guint16) subflow->id);
+  length = (block_length + 1) << 2;
+  dataptr = g_malloc0 (length);
+  memcpy (dataptr, &block, length);
+  result = gst_buffer_new_wrapped (dataptr, length);
+  if (buf_length) {
+    *buf_length = length;
+  }
+  return result;
+}
+
 
 void
 _setup_sr_riport (Subflow * this, GstRTCPSR * sr, guint32 ssrc)

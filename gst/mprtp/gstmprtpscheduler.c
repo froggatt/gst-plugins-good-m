@@ -121,9 +121,6 @@ _retain_queue_head (GstMprtpscheduler * this, GstBuffer ** result);
 enum
 {
   PROP_0,
-  PROP_ALPHA,
-  PROP_BETA,
-  PROP_GAMMA,
   PROP_EXT_HEADER_ID,
   PROP_JOIN_SUBFLOW,
   PROP_DETACH_SUBFLOW,
@@ -417,21 +414,6 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "set_property");
 
   switch (property_id) {
-    case PROP_ALPHA:
-      THIS_WRITELOCK (this);
-      this->alpha_value = g_value_get_float (value);
-      THIS_WRITEUNLOCK (this);
-      break;
-    case PROP_BETA:
-      THIS_WRITELOCK (this);
-      this->beta_value = g_value_get_float (value);
-      THIS_WRITEUNLOCK (this);
-      break;
-    case PROP_GAMMA:
-      THIS_WRITELOCK (this);
-      this->gamma_value = g_value_get_float (value);
-      THIS_WRITEUNLOCK (this);
-      break;
     case PROP_EXT_HEADER_ID:
       THIS_WRITELOCK (this);
       this->ext_header_id = (guint8) g_value_get_uint (value);
@@ -514,21 +496,6 @@ gst_mprtpscheduler_get_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "get_property");
 
   switch (property_id) {
-    case PROP_ALPHA:
-      THIS_READLOCK (this);
-      g_value_set_float (value, this->alpha_value);
-      THIS_READUNLOCK (this);
-      break;
-    case PROP_BETA:
-      THIS_READLOCK (this);
-      g_value_set_float (value, this->beta_value);
-      THIS_READUNLOCK (this);
-      break;
-    case PROP_GAMMA:
-      THIS_READLOCK (this);
-      g_value_set_float (value, this->gamma_value);
-      THIS_READUNLOCK (this);
-      break;
     case PROP_EXT_HEADER_ID:
       THIS_READLOCK (this);
       g_value_set_uint (value, (guint) this->ext_header_id);
@@ -789,21 +756,20 @@ gst_mprtpscheduler_rtp_sink_chain (GstPad * pad, GstObject * parent,
     GST_DEBUG_OBJECT (this, "The reatining process is stopped");
     gst_task_pause (this->retained_thread);
     this->retained_process_started = FALSE;
-    g_print ("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!leállltam");
   }
+
   result = _send_rtp_buffer (this, path, buffer);
   goto done;
 
 retain_and_done:
   if (!this->retain_allowed) {
-    result = gst_pad_push (this->mprtp_srcpad, buffer);
+    result = _send_rtp_buffer (this, path, buffer);
     goto done;
   }
   THIS_READUNLOCK (this);
   THIS_WRITELOCK (this);
   if (!_retain_buffer (this, buffer)) {
     GST_WARNING_OBJECT (this, "Can not retain buffer");
-    g_print ("NEM KÉNE HOGY MINDIG SIKERÜLJÜÖN BETOLNI\n");
     result = GST_FLOW_CUSTOM_ERROR;
   } else {
     gst_buffer_ref (buffer);
@@ -974,13 +940,11 @@ _retain_buffer (GstMprtpscheduler * this, GstBuffer * buf)
   result =
       _retain_queue_try_push (this, buf, gst_clock_get_time (this->sysclock));
   if (result == FALSE) {
-    g_print ("BAZDMEG");
     return FALSE;
   }
   if (gst_task_get_state (this->retained_thread) != GST_TASK_STARTED) {
     result &= gst_task_start (this->retained_thread);
     this->retained_process_started = TRUE;
-    g_print ("!!!!!!!!!!!!!!!!!!!!!elindultam!!!!!!!!!!!!!!!!!!!!\n");
   }
   return result;
 }

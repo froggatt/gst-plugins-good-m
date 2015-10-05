@@ -86,25 +86,25 @@ static Subflow *make_subflow (MPRTPSPath * path);
 
 
 static MPRTPSPath *_get_next_path (StreamSplitter * this, GstRTPBuffer * rtp);
-static void _print_tree (SchNode * node, gint top, gint level);
-void
-_print_tree (SchNode * node, gint top, gint level)
-{
-  gint i;
-  if (node == NULL) {
-    return;
-  }
-  for (i = 0; i < level; ++i)
-    g_print ("--");
-  if (node->path != NULL) {
-    g_print ("%d->%d:%d\n", top >> level, mprtps_path_get_id (node->path),
-        node->sent_bytes);
-  } else {
-    g_print ("%d->C:%d\n", top >> level, node->sent_bytes);
-  }
-  _print_tree (node->left, top, level + 1);
-  _print_tree (node->right, top, level + 1);
-}
+//static void _print_tree (SchNode * node, gint top, gint level);
+//void
+//_print_tree (SchNode * node, gint top, gint level)
+//{
+//  gint i;
+//  if (node == NULL) {
+//    return;
+//  }
+//  for (i = 0; i < level; ++i)
+//    g_print ("--");
+//  if (node->path != NULL) {
+//    g_print ("%d->%d:%d\n", top >> level, mprtps_path_get_id (node->path),
+//        node->sent_bytes);
+//  } else {
+//    g_print ("%d->C:%d\n", top >> level, node->sent_bytes);
+//  }
+//  _print_tree (node->left, top, level + 1);
+//  _print_tree (node->right, top, level + 1);
+//}
 
 //----------------------------------------------------------------------
 //---- Private function implementations to Stream Dealer object --------
@@ -383,6 +383,8 @@ stream_splitter_run (void *data)
       this->keyframe_ratio = 1. - this->non_keyframe_ratio;
     } else {
       GST_DEBUG_OBJECT (this, "Neither middly nor congested paths exists");
+      _schnode_rdtor (this->non_keyframes_tree);
+      this->non_keyframes_tree = NULL;
       this->non_keyframe_ratio = 0.;
       this->keyframe_ratio = 1.;
     }
@@ -401,6 +403,8 @@ stream_splitter_run (void *data)
       this->keyframe_ratio = 1. - this->non_keyframe_ratio;
     } else {
       GST_DEBUG_OBJECT (this, "No congested paths exists");
+      _schnode_rdtor (this->non_keyframes_tree);
+      this->non_keyframes_tree = NULL;
       this->non_keyframe_ratio = 0.;
       this->keyframe_ratio = 1.;
     }
@@ -409,17 +413,20 @@ stream_splitter_run (void *data)
         bid_c_sum);
     _tree_commit (&this->non_keyframes_tree, this->subflows,
         MPRTPS_PATH_STATE_CONGESTED, bid_c_sum);
+    _schnode_rdtor (this->keyframes_tree);
     this->keyframes_tree = NULL;
     this->non_keyframe_ratio = 1.;
     this->keyframe_ratio = 0.;
   } else {
+    _schnode_rdtor (this->keyframes_tree);
     this->keyframes_tree = NULL;
+    _schnode_rdtor (this->non_keyframes_tree);
     this->non_keyframes_tree = NULL;
   }
-  g_print ("NON_KEYFRAMES_TREE\n");
-  _print_tree (this->non_keyframes_tree, 128, 0);
-  g_print ("KEYFRAMES_TREE\n");
-  _print_tree (this->keyframes_tree, 128, 0);
+//  g_print ("NON_KEYFRAMES_TREE\n");
+//  _print_tree (this->non_keyframes_tree, 128, 0);
+//  g_print ("KEYFRAMES_TREE\n");
+//  _print_tree (this->keyframes_tree, 128, 0);
 //  g_print("full_tree:\n"); _print_tree(this->full_tree, SCHTREE_MAX_VALUE, 0);
 //  g_print("keyframes_tree:\n"); _print_tree(this->keyframes_tree, SCHTREE_MAX_VALUE, 0);
 

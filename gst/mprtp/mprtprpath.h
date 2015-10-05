@@ -43,6 +43,7 @@ struct _MPRTPReceiverPath
   guint32       received_since_cycle_is_increased;
   guint32       total_late_discarded;
   guint32       total_late_discarded_bytes;
+  guint32       total_received_bytes;
   guint32       total_early_discarded;
   guint32       total_duplicated_packet_num;
   guint16       actual_seq;
@@ -82,6 +83,7 @@ guint32 mprtpr_path_get_jitter(MPRTPRPath * this);
 guint32 mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this);
 guint32 mprtpr_path_get_total_late_discarded_num(MPRTPRPath * this);
 guint32 mprtpr_path_get_total_late_discarded_bytes_num(MPRTPRPath * this);
+guint32 mprtpr_path_get_total_bytes_received (MPRTPRPath * this);
 guint32 mprtpr_path_get_total_duplicated_packet_num(MPRTPRPath * this);
 guint64 mprtpr_path_get_total_received_packets_num (MPRTPRPath * this);
 GList *mprtpr_path_get_packets (MPRTPRPath * this);

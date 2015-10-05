@@ -309,6 +309,12 @@ void gst_print_rtcp_rrb (GstRTCPRRBlock * block_ptr);
 #include <gst/rtp/gstrtpbuffer.h>
 void gst_print_rtp_packet_info (GstRTPBuffer * rtp);
 
+gdouble rtcp_interval(  gint senders,
+                        gint members,
+                        gdouble rtcp_bw,
+                        gint we_sent,
+                        gdouble avg_rtcp_size,
+                        gint initial);
 #ifdef __WIN32__
 
 #pragma pack(pop)

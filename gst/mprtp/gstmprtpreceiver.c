@@ -556,13 +556,13 @@ gst_mprtpreceiver_sink_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   }
   THIS_READLOCK (this);
   packet_type = _get_packet_mptype (this, buf, &map, &subflow_id);
-//  if(subflow_id == 2)
-//    g_print("packet arrived at %d\n", subflow_id);
+
   if (packet_type == PACKET_IS_MPRTCP) {
     result = _send_mprtcp_buffer (this, buf);
     gst_buffer_unmap (buf, &map);
   } else {
     gst_buffer_unmap (buf, &map);
+
     result = gst_pad_push (this->mprtp_srcpad, buf);
   }
 
