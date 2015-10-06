@@ -864,7 +864,7 @@ _check_state (Subflow * this)
         result = EVENT_LATE;
         goto done;
       }
-      if (this->consecutive_lost > 2 && this->consecutive_discarded > 1) {
+      if (this->consecutive_lost > 2 && this->consecutive_discarded >= 1) {
         result = EVENT_CONGESTION;
         goto done;
       }
