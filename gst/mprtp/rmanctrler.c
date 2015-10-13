@@ -25,6 +25,7 @@
 #include <gst/rtp/gstrtcpbuffer.h>
 #include "smanctrler.h"
 #include "rmanctrler.h"
+#include "streamjoiner.h"
 #include <math.h>
 
 
@@ -41,7 +42,7 @@ static void rmanctrler_finalize (GObject * object);
 static void rmanctrler_mprtcp_receiver (gpointer this, GstBuffer * buf);
 static void rmanctrler_riport_can_flow (gpointer this);
 static void rmanctrler_add_path (gpointer controller_ptr, guint8 subflow_id,
-    MPRTPRPath * path);
+    MpRTPRPath * path);
 static void rmanctrler_rem_path (gpointer controller_ptr, guint8 subflow_id);
 //----------------------------------------------------------------------
 //--------- Private functions implementations to SchTree object --------
@@ -74,7 +75,7 @@ rmanctrler_init (RcvManualController * this)
 
 static void
 rmanctrler_add_path (gpointer controller_ptr,
-    guint8 subflow_id, MPRTPRPath * path)
+    guint8 subflow_id, MpRTPRPath * path)
 {
   RcvManualController *this;
   this = RMANCTRLER (controller_ptr);
@@ -93,7 +94,7 @@ rmanctrler_rem_path (gpointer controller_ptr, guint8 subflow_id)
 
 void
 rmanctrler_set_callbacks (void (**riport_can_flow_indicator) (gpointer),
-    void (**controller_add_path) (gpointer, guint8, MPRTPRPath *),
+    void (**controller_add_path) (gpointer, guint8, MpRTPRPath *),
     void (**controller_rem_path) (gpointer, guint8))
 {
   if (riport_can_flow_indicator) {
@@ -124,6 +125,13 @@ rmanctrler_mprtcp_receiver (gpointer this, GstBuffer * buf)
       buf);
 }
 
+void
+rmanctrler_setup (gpointer ptr, StreamJoiner * joiner)
+{
+  RcvManualController *this;
+  this = RMANCTRLER (ptr);
+  this->joiner = joiner;
+}
 
 
 void

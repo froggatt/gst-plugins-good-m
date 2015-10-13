@@ -102,7 +102,7 @@ static gboolean _select_subflow (GstMprtpsender * this, guint8 id,
 enum
 {
   PROP_0,
-  PROP_EXT_HEADER_ID,
+  PROP_MPRTP_EXT_HEADER_ID,
   PROP_PIVOT_OUTPAD,
 };
 
@@ -241,11 +241,11 @@ gst_mprtpsender_class_init (GstMprtpsenderClass * klass)
       GST_DEBUG_FUNCPTR (gst_mprtpsender_change_state);
   element_class->query = GST_DEBUG_FUNCPTR (gst_mprtpsender_query);
 
-  g_object_class_install_property (gobject_class, PROP_EXT_HEADER_ID,
-      g_param_spec_uint ("ext-header-id",
+  g_object_class_install_property (gobject_class, PROP_MPRTP_EXT_HEADER_ID,
+      g_param_spec_uint ("mprtp-ext-header-id",
           "Set or get the id for the RTP extension",
-          "Sets or gets the id for the extension header the MpRTP based on", 0,
-          15, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          "Sets or gets the id for the extension header the MpRTP based on. The default is 3",
+          0, 15, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_PIVOT_OUTPAD,
       g_param_spec_uint ("pivot-outpad",
@@ -289,7 +289,7 @@ gst_mprtpsender_init (GstMprtpsender * mprtpsender)
 //  GST_PAD_SET_PROXY_CAPS (mprtpsender->mprtp_sinkpad);
 //  GST_PAD_SET_PROXY_ALLOCATION (mprtpsender->mprtp_sinkpad);
 
-  mprtpsender->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
+  mprtpsender->mprtp_ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   mprtpsender->pivot_outpad = NULL;
   mprtpsender->event_segment = NULL;
   mprtpsender->event_caps = NULL;
@@ -308,9 +308,9 @@ gst_mprtpsender_set_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "set_property");
 
   switch (property_id) {
-    case PROP_EXT_HEADER_ID:
+    case PROP_MPRTP_EXT_HEADER_ID:
       THIS_WRITELOCK (this);
-      this->ext_header_id = (guint8) g_value_get_uint (value);
+      this->mprtp_ext_header_id = (guint8) g_value_get_uint (value);
       THIS_WRITEUNLOCK (this);
       break;
     case PROP_PIVOT_OUTPAD:
@@ -338,9 +338,9 @@ gst_mprtpsender_get_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "get_property");
 
   switch (property_id) {
-    case PROP_EXT_HEADER_ID:
+    case PROP_MPRTP_EXT_HEADER_ID:
       THIS_READLOCK (this);
-      g_value_set_uint (value, (guint) this->ext_header_id);
+      g_value_set_uint (value, (guint) this->mprtp_ext_header_id);
       THIS_READUNLOCK (this);
       break;
     default:
@@ -595,8 +595,8 @@ _get_packet_mptype (GstMprtpsender * this,
       goto done;
     }
 
-    if (!gst_rtp_buffer_get_extension_onebyte_header (&rtp, this->ext_header_id,
-            0, &pointer, &size)) {
+    if (!gst_rtp_buffer_get_extension_onebyte_header (&rtp,
+            this->mprtp_ext_header_id, 0, &pointer, &size)) {
       gst_rtp_buffer_unmap (&rtp);
       goto done;
     }

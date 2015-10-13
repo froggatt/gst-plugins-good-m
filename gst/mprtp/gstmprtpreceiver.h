@@ -36,13 +36,14 @@ struct _GstMprtpreceiver
   GstElement base_mprtpreceiver;
 
   GRWLock rwmutex;
-  GList *subflows;
-  GstPad *mprtp_srcpad;
-  GstPad *mprtcp_rr_srcpad;
-  GstPad *mprtcp_sr_srcpad;
+  GList*  subflows;
+  GstPad* mprtp_srcpad;
+  GstPad* mprtcp_rr_srcpad;
+  GstPad* mprtcp_sr_srcpad;
 
-  guint only_report_receiving;
-  guint8 ext_header_id;
+  guint   only_report_receiving;
+  guint8  mprtp_ext_header_id;
+
 };
 
 struct _GstMprtpreceiverClass

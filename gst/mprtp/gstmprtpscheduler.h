@@ -54,7 +54,8 @@ struct _GstMprtpscheduler
   gfloat           alpha_value;
   gfloat           beta_value;
   gfloat           gamma_value;
-  guint8           ext_header_id;
+  guint8           mprtp_ext_header_id;
+  guint8           abs_time_ext_header_id;
   guint            flow_controlling_mode;
   GHashTable*      paths;
   GRWLock          rwmutex;

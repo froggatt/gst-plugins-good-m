@@ -27,6 +27,7 @@
 #include "streamsplitter.h"
 #include "gstmprtcpbuffer.h"
 #include "mprtprpath.h"
+#include "streamjoiner.h"
 #include <math.h>
 #include <string.h>
 
@@ -46,7 +47,7 @@ typedef struct _Subflow Subflow;
 
 struct _Subflow
 {
-  MPRTPRPath *path;
+  MpRTPRPath *path;
   guint8 id;
   GstClock *sysclock;
   GstClockTime joined_time;
@@ -59,7 +60,7 @@ struct _Subflow
   gboolean faster_reporting_started_time;
   guint packet_limit_to_riport;
   gboolean urgent_riport_is_requested;
-
+  guint64 path_skew;
   GstClockTime LSR;
   guint16 HSN;
 
@@ -97,11 +98,11 @@ gboolean _do_report_now (Subflow * subflow);
 static guint32 _uint32_diff (guint32 a, guint32 b);
 static void refctrler_rem_path (gpointer controller_ptr, guint8 subflow_id);
 static void refctrler_add_path (gpointer controller_ptr, guint8 subflow_id,
-    MPRTPRPath * path);
+    MpRTPRPath * path);
 
 static void refctrler_riport_can_flow (gpointer subflow);
 //subflow functions
-static Subflow *make_subflow (guint8 id, MPRTPRPath * path);
+static Subflow *make_subflow (guint8 id, MpRTPRPath * path);
 static void ruin_subflow (gpointer * subflow);
 static void reset_subflow (Subflow * subflow);
 static Subflow *subflow_ctor (void);
@@ -162,7 +163,8 @@ refctrler_run (void *data)
   gpointer key, val;
   Subflow *subflow;
   GstClockID clock_id;
-  MPRTPRPath *path;
+  MpRTPRPath *path;
+  guint64 max_path_skew = 0;
 
   this = REFCTRLER (data);
   THIS_WRITELOCK (this);
@@ -215,7 +217,15 @@ refctrler_run (void *data)
       _recalc_report_time (subflow);
     }
 
+    mprtpr_path_removes_obsolate_packets (path);
+    subflow->path_skew = mprtpr_path_get_skew (path);
+    if (max_path_skew < subflow->path_skew)
+      max_path_skew = subflow->path_skew;
   }
+
+  if (!max_path_skew)
+    max_path_skew = GST_MSECOND;
+  stream_joiner_set_playout_delay (this->joiner, max_path_skew);
 
 //done:
   next_scheduler_time = now + 100 * GST_MSECOND;
@@ -232,7 +242,7 @@ refctrler_run (void *data)
 
 void
 refctrler_add_path (gpointer controller_ptr, guint8 subflow_id,
-    MPRTPRPath * path)
+    MpRTPRPath * path)
 {
   RcvEventBasedController *this;
   Subflow *lookup_result;
@@ -275,7 +285,7 @@ exit:
 
 void
 refctrler_set_callbacks (void (**riport_can_flow_indicator) (gpointer),
-    void (**controller_add_path) (gpointer, guint8, MPRTPRPath *),
+    void (**controller_add_path) (gpointer, guint8, MpRTPRPath *),
     void (**controller_rem_path) (gpointer, guint8))
 {
   if (riport_can_flow_indicator) {
@@ -384,7 +394,7 @@ ruin_subflow (gpointer * subflow)
 }
 
 Subflow *
-make_subflow (guint8 id, MPRTPRPath * path)
+make_subflow (guint8 id, MpRTPRPath * path)
 {
   Subflow *result = subflow_ctor ();
   g_object_ref (path);
@@ -411,6 +421,15 @@ reset_subflow (Subflow * this)
   this->HSN = 0;
 }
 
+void
+refctrler_setup (gpointer ptr, StreamJoiner * joiner)
+{
+  RcvEventBasedController *this;
+  this = REFCTRLER (ptr);
+  THIS_WRITELOCK (this);
+  this->joiner = joiner;
+  THIS_WRITEUNLOCK (this);
+}
 
 
 guint16
@@ -505,7 +524,7 @@ _setup_rr_riport (Subflow * this, GstRTCPRR * rr, guint32 ssrc)
   guint8 fraction_lost;
   guint32 ext_hsn, LSR, DLSR;
   guint16 expected;
-  MPRTPRPath *path;
+  MpRTPRPath *path;
   guint16 HSN;
   guint16 cycle_num;
   guint32 jitter;

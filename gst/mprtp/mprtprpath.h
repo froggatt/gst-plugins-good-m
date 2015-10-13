@@ -13,20 +13,25 @@
 #include <gst/rtp/gstrtcpbuffer.h>
 #include "gstmprtcpbuffer.h"
 
-G_BEGIN_DECLS typedef struct _MPRTPReceiverPath MPRTPRPath;
-typedef struct _MPRTPReceiverPathClass MPRTPRPathClass;
+G_BEGIN_DECLS
 
+typedef struct _MpRTPReceiverPath MpRTPRPath;
+typedef struct _MpRTPReceiverPathClass MpRTPRPathClass;
+typedef struct _MpRTPRReceivedItem  MpRTPRReceivedItem;
+typedef struct _SkewTree SkewTree;
+typedef struct _SkewChain PacketChain;
+typedef struct _MpRTPPacket MpRTPPacket;
 
 #define MPRTPR_PATH_TYPE             (mprtpr_path_get_type())
 #define MPRTPR_PATH(src)             (G_TYPE_CHECK_INSTANCE_CAST((src),MPRTPR_PATH_TYPE,MPRTPRPath))
 #define MPRTPR_PATH_CLASS(klass)     (G_TYPE_CHECK_CLASS_CAST((klass),MPRTPR_PATH_TYPE,MPRTPRPathClass))
 #define MPRTPR_PATH_IS_SOURCE(src)          (G_TYPE_CHECK_INSTANCE_TYPE((src),MPRTPR_PATH_TYPE))
 #define MPRTPR_PATH_IS_SOURCE_CLASS(klass)  (G_TYPE_CHECK_CLASS_TYPE((klass),MPRTPR_PATH_TYPE))
-#define MPRTPR_PATH_CAST(src)        ((MPRTPRPath *)(src))
+#define MPRTPR_PATH_CAST(src)        ((MpRTPRPath *)(src))
 
 
 
-struct _MPRTPReceiverPath
+struct _MpRTPReceiverPath
 {
   GObject       object;
   guint8        id;
@@ -34,9 +39,9 @@ struct _MPRTPReceiverPath
 
   GList*        gaps;
   GList*        result;
-  guint8        ext_header_id;
+  //guint8        ext_header_id;
   gboolean      seq_initialized;
-  gboolean      skew_initialized;
+  //gboolean      skew_initialized;
   guint16       cycle_num;
   guint32       jitter;
 
@@ -50,46 +55,51 @@ struct _MPRTPReceiverPath
 
   guint64       ext_rtptime;
   guint64       last_packet_skew;
-  guint64       skews[100];
-  guint64       received_times[100];
-  guint8        skews_write_index;
-  guint8        skews_read_index;
   GstClockTime  last_received_time;
   GstClock*     sysclock;
   guint16       HSN;
   guint32       total_packet_losts;
-  guint32       packet_received;
   guint64       total_packet_received;
-//  guint         received_payload_bytes;
-//  gfloat        avg_rtp_size;
+
+  SkewTree*     skew_max_tree;
+  SkewTree*     skew_min_tree;
+  PacketChain*  packet_chain;
+  GQueue*       packets_pool;
+  GQueue*       gaps_pool;
 
 };
 
-struct _MPRTPReceiverPathClass
+struct _MpRTPReceiverPathClass
 {
   GObjectClass parent_class;
 };
 
 
 GType mprtpr_path_get_type (void);
-MPRTPRPath *make_mprtpr_path (guint8 id);
-void mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer *buf, guint16 seq);
-void mprtpr_path_add_packet_skew (MPRTPRPath * this, guint32 rtptime, guint32 clockrate);
-guint64 mprtpr_path_get_packet_skew_median (MPRTPRPath * this);
+MpRTPRPath *make_mprtpr_path (guint8 id);
+//guint64 mprtpr_path_get_packet_skew_median (MPRTPRPath * this);
 
-guint16 mprtpr_path_get_cycle_num(MPRTPRPath * this);
-guint16 mprtpr_path_get_highest_sequence_number(MPRTPRPath * this);
-guint32 mprtpr_path_get_jitter(MPRTPRPath * this);
-guint32 mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this);
-guint32 mprtpr_path_get_total_late_discarded_num(MPRTPRPath * this);
-guint32 mprtpr_path_get_total_late_discarded_bytes_num(MPRTPRPath * this);
-guint32 mprtpr_path_get_total_bytes_received (MPRTPRPath * this);
-guint32 mprtpr_path_get_total_duplicated_packet_num(MPRTPRPath * this);
-guint64 mprtpr_path_get_total_received_packets_num (MPRTPRPath * this);
-GList *mprtpr_path_get_packets (MPRTPRPath * this);
-guint32 mprtpr_path_get_total_early_discarded_packets_num (MPRTPRPath * this);
-guint8 mprtpr_path_get_id (MPRTPRPath * this);
+guint16 mprtpr_path_get_cycle_num(MpRTPRPath * this);
+guint16 mprtpr_path_get_highest_sequence_number(MpRTPRPath * this);
+guint32 mprtpr_path_get_jitter(MpRTPRPath * this);
+guint32 mprtpr_path_get_total_packet_losts_num (MpRTPRPath * this);
+guint32 mprtpr_path_get_total_late_discarded_num(MpRTPRPath * this);
+guint32 mprtpr_path_get_total_late_discarded_bytes_num(MpRTPRPath * this);
+guint32 mprtpr_path_get_total_bytes_received (MpRTPRPath * this);
+guint32 mprtpr_path_get_total_duplicated_packet_num(MpRTPRPath * this);
+guint64 mprtpr_path_get_total_received_packets_num (MpRTPRPath * this);
+guint32 mprtpr_path_get_total_early_discarded_packets_num (MpRTPRPath * this);
+guint8 mprtpr_path_get_id (MpRTPRPath * this);
 
+void mprtpr_path_process_rtp_packet(MpRTPRPath *this,
+                               GstRTPBuffer *rtp,
+                               guint16 packet_subflow_seq_num,
+                               GstClockTime snd_time);
+
+void mprtpr_path_removes_obsolate_packets(MpRTPRPath *this);
+guint64 mprtpr_path_get_skew(MpRTPRPath *this);
+GstBuffer* mprtpr_path_pop_buffer_to_playout(MpRTPRPath *this, guint16* abs_seq);
+gboolean mprtpr_path_has_buffer_to_playout(MpRTPRPath *this);
 
 G_END_DECLS
 #endif /* MPRTPRSUBFLOW_H_ */

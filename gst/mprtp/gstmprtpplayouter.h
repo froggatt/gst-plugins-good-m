@@ -41,9 +41,11 @@ struct _GstMprtpplayouter
 
   GRWLock rwmutex;
 
-  guint8 ext_header_id;
+  guint8 mprtp_ext_header_id;
+  guint8 abs_time_ext_header_id;
   guint32 pivot_ssrc;
   guint32 pivot_clock_rate;
+  guint64 clock_base;
   gboolean auto_flow_riporting;
   gboolean rtp_passthrough;
 
@@ -56,10 +58,11 @@ struct _GstMprtpplayouter
   GHashTable *paths;
   StreamJoiner *joiner;
   gpointer controller;
+  GstClock* sysclock;
 
   guint  subflows_num;
 
-  void (*controller_add_path) (gpointer, guint8, MPRTPRPath *);
+  void (*controller_add_path) (gpointer, guint8, MpRTPRPath *);
   void (*controller_rem_path) (gpointer, guint8);
   void (*mprtcp_receiver) (gpointer, GstBuffer *);
   void (*riport_can_flow) (gpointer);

@@ -87,7 +87,7 @@ smanctrler_rem_path (gpointer controller_ptr, guint8 subflow_id)
 {
   SndManualController *this;
   this = SMANCTRLER (controller_ptr);
-  GST_DEBUG_OBJECT (this, "Receive Manual Controller add path is called"
+  GST_DEBUG_OBJECT (this, "Sending Manual Controller add path is called "
       "for detaching subflow %d", subflow_id);
 }
 

@@ -13,7 +13,7 @@
 #include "mprtprpath.h"
 #include "streamsplitter.h"
 #include "smanctrler.h"
-
+#include "streamjoiner.h"
 
 typedef struct _RcvEventBasedController RcvEventBasedController;
 typedef struct _RcvEventBasedControllerClass RcvEventBasedControllerClass;
@@ -35,6 +35,7 @@ struct _RcvEventBasedController
   GHashTable*       subflows;
   GRWLock           rwmutex;
   GstClock*         sysclock;
+  StreamJoiner*     joiner;
   guint32           ssrc;
   void            (*send_mprtcp_packet_func)(gpointer,GstBuffer*);
   gpointer          send_mprtcp_packet_data;
@@ -48,11 +49,11 @@ struct _RcvEventBasedControllerClass{
 
 
 //Class functions
-void refctrler_setup(RcvEventBasedController* this,
-                     StreamSplitter* splitter);
+void refctrler_setup(gpointer this,
+                     StreamJoiner* splitter);
 
 void refctrler_set_callbacks(void(**riport_can_flow_indicator)(gpointer),
-                             void(**controller_add_path)(gpointer,guint8,MPRTPRPath*),
+                             void(**controller_add_path)(gpointer,guint8,MpRTPRPath*),
                              void(**controller_rem_path)(gpointer,guint8));
 
 GstBufferReceiverFunc

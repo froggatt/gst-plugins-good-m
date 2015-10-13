@@ -12,7 +12,7 @@
 GST_DEBUG_CATEGORY_STATIC (gst_mprtpr_path_debug_category);
 #define GST_CAT_DEFAULT gst_mprtpr_path_debug_category
 
-G_DEFINE_TYPE (MPRTPRPath, mprtpr_path, G_TYPE_OBJECT);
+G_DEFINE_TYPE (MpRTPRPath, mprtpr_path, G_TYPE_OBJECT);
 
 
 #define THIS_READLOCK(this) g_rw_lock_reader_lock(&this->rwmutex)
@@ -20,30 +20,103 @@ G_DEFINE_TYPE (MPRTPRPath, mprtpr_path, G_TYPE_OBJECT);
 #define THIS_WRITELOCK(this) g_rw_lock_writer_lock(&this->rwmutex)
 #define THIS_WRITEUNLOCK(this) g_rw_lock_writer_unlock(&this->rwmutex)
 
-typedef struct _Gap
+#define GET_SKEW_TREE_TOP(tree) (tree->top)
+#define GET_SKEW_TREE_NUM(tree) (tree->counter)
+#define _skew_tree_remove_top(tree) _remove_skew_tree(tree, tree->top)
+
+typedef struct _Gap Gap;
+
+struct _Gap
 {
-  GList *at;
+  MpRTPPacket *at;
   guint16 start;
   guint16 end;
   guint16 total;
   guint16 filled;
-} Gap;
+};
+
+struct _SkewTree
+{
+  MpRTPPacket *root;
+  MpRTPPacket *top;
+    gint (*cmp) (MpRTPPacket *, MpRTPPacket *);
+  gint counter;
+};
+
+struct _SkewChain
+{
+  MpRTPPacket *head, *tail, *play;
+  gint counter;
+};
+
+
+struct _MpRTPPacket
+{
+  GstBuffer *buffer;
+  GstClockTime arrival;
+  GstClockTimeDiff interleave;
+  MpRTPPacket *next;
+  MpRTPPacket *successor;
+  MpRTPPacket *left;
+  MpRTPPacket *right;
+  MpRTPPacket *parent;
+  SkewTree *tree;
+  Gap *gap;
+  guint32 payload_bytes;
+  guint16 abs_seq_num;
+  guint16 rel_seq_num;
+  GstClockTime rcv_time;
+  GstClockTime snd_time;
+  GstClockTimeDiff delay;
+  guint64 skew;
+
+};
 
 static void mprtpr_path_finalize (GObject * object);
-static void mprtpr_path_reset (MPRTPRPath * this);
+static void mprtpr_path_reset (MpRTPRPath * this);
 
-static guint16
-_mprtp_buffer_get_sequence_num (GstRTPBuffer * rtp, guint8 MPRTP_EXT_HEADER_ID);
-
-static gboolean
-_found_in_gaps (GList * gaps, guint16 actual_subflow_sequence,
-    guint8 ext_header_id, GList ** result_item, Gap ** result_gap);
-static Gap *_make_gap (GList * at, guint16 start, guint16 end);
+static MpRTPPacket *_make_packet (MpRTPRPath * this,
+    GstRTPBuffer * rtp, guint16 packet_subflow_seq_num, GstClockTime snd_time);
+static void _trash_packet (MpRTPRPath * this, MpRTPPacket * packet);
+static void _add_packet (MpRTPRPath * this, MpRTPPacket * packet);
+static void
+_chain_packets (MpRTPRPath * this, MpRTPPacket * actual, MpRTPPacket * next);
+static void _ruin_packet_skew_tree (MpRTPRPath * this, SkewTree * tree);
+static void
+_reset_skew_trees (MpRTPRPath * this, MpRTPPacket * first,
+    MpRTPPacket * second);
+static void _add_packet_skew (MpRTPRPath * this, MpRTPPacket * packet);
+static void _balancing_skew_tree (MpRTPRPath * this);
+static MpRTPPacket *_insert_skew_tree (SkewTree * tree, MpRTPPacket * packet);
+static MpRTPPacket *_remove_skew_tree (SkewTree * tree, MpRTPPacket * packet);
+static void
+_make_gap (MpRTPRPath * this, MpRTPPacket * at, guint16 start, guint16 end);
+static void _trash_gap (MpRTPRPath * this, Gap * gap);
+static gboolean _try_fill_a_gap (MpRTPRPath * this, MpRTPPacket * packet);
 static gint _cmp_seq (guint16 x, guint16 y);
+static gint _cmp_for_max (MpRTPPacket * x, MpRTPPacket * y);
+static gint _cmp_for_min (MpRTPPacket * x, MpRTPPacket * y);
+
+void static
+_print_tree (SkewTree * tree, MpRTPPacket * node, gint level)
+{
+  gint i;
+  if (node == NULL) {
+    return;
+  }
+  if (!level)
+    g_print ("Tree %p TOP is: %p \n", tree, tree->top);
+  for (i = 0; i < level && i < 10; ++i)
+    g_print ("--");
+  g_print ("%d->%p->skew:%lu ->parent: %p ->left:%p ->right:%p\n",
+      level, node, node->skew, node->parent, node->left, node->right);
+  _print_tree (tree, node->left, level + 1);
+  _print_tree (tree, node->right, level + 1);
+}
 
 
 void
-mprtpr_path_class_init (MPRTPRPathClass * klass)
+mprtpr_path_class_init (MpRTPRPathClass * klass)
 {
   GObjectClass *gobject_class;
 
@@ -56,10 +129,10 @@ mprtpr_path_class_init (MPRTPRPathClass * klass)
 }
 
 
-MPRTPRPath *
+MpRTPRPath *
 make_mprtpr_path (guint8 id)
 {
-  MPRTPRPath *result;
+  MpRTPRPath *result;
 
   result = g_object_new (MPRTPR_PATH_TYPE, NULL);
   THIS_WRITELOCK (result);
@@ -68,13 +141,47 @@ make_mprtpr_path (guint8 id)
   return result;
 }
 
+
 void
-mprtpr_path_reset (MPRTPRPath * this)
+mprtpr_path_init (MpRTPRPath * this)
+{
+  g_rw_lock_init (&this->rwmutex);
+  this->sysclock = gst_system_clock_obtain ();
+  this->packet_chain = (PacketChain *) g_malloc0 (sizeof (PacketChain));
+  this->packets_pool = g_queue_new ();
+  this->gaps_pool = g_queue_new ();
+  this->skew_max_tree = g_malloc0 (sizeof (SkewTree));
+  this->skew_min_tree = g_malloc0 (sizeof (SkewTree));
+  this->skew_max_tree->cmp = _cmp_for_max;
+  this->skew_min_tree->cmp = _cmp_for_min;
+
+  mprtpr_path_reset (this);
+}
+
+
+void
+mprtpr_path_finalize (GObject * object)
+{
+  MpRTPRPath *this;
+  this = MPRTPR_PATH_CAST (object);
+  g_object_unref (this->sysclock);
+  while (g_queue_is_empty (this->packets_pool))
+    g_free (g_queue_pop_head (this->packets_pool));
+  while (g_queue_is_empty (this->gaps_pool))
+    g_free (g_queue_pop_head (this->gaps_pool));
+  g_free (this->skew_max_tree);
+  g_free (this->skew_min_tree);
+
+}
+
+
+void
+mprtpr_path_reset (MpRTPRPath * this)
 {
   this->gaps = NULL;
   this->result = NULL;
   this->seq_initialized = FALSE;
-  this->skew_initialized = FALSE;
+  //this->skew_initialized = FALSE;
   this->cycle_num = 0;
   this->jitter = 0;
   this->received_since_cycle_is_increased = 0;
@@ -83,19 +190,20 @@ mprtpr_path_reset (MPRTPRPath * this)
   this->total_early_discarded = 0;
   this->total_duplicated_packet_num = 0;
   this->actual_seq = 0;
+  this->total_packet_losts = 0;
+  this->total_packet_received = 0;
 
-  this->ext_rtptime = 0;
+  this->ext_rtptime = -1;
   this->last_packet_skew = 0;
-  this->skews_write_index = 0;
-  this->skews_read_index = 0;
+//  this->skews_write_index = 0;
+//  this->skews_read_index = 0;
   this->last_received_time = 0;
   this->HSN = 0;
-  this->total_packet_losts = 0;
-  this->packet_received = 0;
+
 }
 
 guint16
-mprtpr_path_get_cycle_num (MPRTPRPath * this)
+mprtpr_path_get_cycle_num (MpRTPRPath * this)
 {
   guint16 result;
   THIS_READLOCK (this);
@@ -105,7 +213,7 @@ mprtpr_path_get_cycle_num (MPRTPRPath * this)
 }
 
 guint16
-mprtpr_path_get_highest_sequence_number (MPRTPRPath * this)
+mprtpr_path_get_highest_sequence_number (MpRTPRPath * this)
 {
   guint16 result;
   THIS_READLOCK (this);
@@ -115,7 +223,7 @@ mprtpr_path_get_highest_sequence_number (MPRTPRPath * this)
 }
 
 guint32
-mprtpr_path_get_jitter (MPRTPRPath * this)
+mprtpr_path_get_jitter (MpRTPRPath * this)
 {
   guint32 result;
   THIS_READLOCK (this);
@@ -125,7 +233,7 @@ mprtpr_path_get_jitter (MPRTPRPath * this)
 }
 
 guint32
-mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this)
+mprtpr_path_get_total_packet_losts_num (MpRTPRPath * this)
 {
   guint16 result;
   THIS_READLOCK (this);
@@ -135,7 +243,7 @@ mprtpr_path_get_total_packet_losts_num (MPRTPRPath * this)
 }
 
 guint32
-mprtpr_path_get_total_late_discarded_num (MPRTPRPath * this)
+mprtpr_path_get_total_late_discarded_num (MpRTPRPath * this)
 {
   guint16 result;
   THIS_READLOCK (this);
@@ -145,7 +253,7 @@ mprtpr_path_get_total_late_discarded_num (MPRTPRPath * this)
 }
 
 guint32
-mprtpr_path_get_total_late_discarded_bytes_num (MPRTPRPath * this)
+mprtpr_path_get_total_late_discarded_bytes_num (MpRTPRPath * this)
 {
   guint32 result;
   THIS_READLOCK (this);
@@ -155,7 +263,7 @@ mprtpr_path_get_total_late_discarded_bytes_num (MPRTPRPath * this)
 }
 
 guint32
-mprtpr_path_get_total_bytes_received (MPRTPRPath * this)
+mprtpr_path_get_total_bytes_received (MpRTPRPath * this)
 {
   guint32 result;
   THIS_READLOCK (this);
@@ -165,7 +273,7 @@ mprtpr_path_get_total_bytes_received (MPRTPRPath * this)
 }
 
 guint64
-mprtpr_path_get_total_received_packets_num (MPRTPRPath * this)
+mprtpr_path_get_total_received_packets_num (MpRTPRPath * this)
 {
   guint32 result;
   THIS_READLOCK (this);
@@ -176,7 +284,7 @@ mprtpr_path_get_total_received_packets_num (MPRTPRPath * this)
 
 
 guint32
-mprtpr_path_get_total_duplicated_packet_num (MPRTPRPath * this)
+mprtpr_path_get_total_duplicated_packet_num (MpRTPRPath * this)
 {
   guint16 result;
   THIS_READLOCK (this);
@@ -185,53 +293,9 @@ mprtpr_path_get_total_duplicated_packet_num (MPRTPRPath * this)
   return result;
 }
 
-void
-mprtpr_path_init (MPRTPRPath * this)
-{
-  g_rw_lock_init (&this->rwmutex);
-  this->sysclock = gst_system_clock_obtain ();
-  this->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
-  mprtpr_path_reset (this);
-}
-
-
-void
-mprtpr_path_finalize (GObject * object)
-{
-  MPRTPRPath *this;
-  this = MPRTPR_PATH_CAST (object);
-  g_object_unref (this->sysclock);
-
-}
-
-GList *
-mprtpr_path_get_packets (MPRTPRPath * this)
-{
-  GList *result, *it;
-  Gap *gap;
-  THIS_WRITELOCK (this);
-
-  result = this->result;
-  for (it = this->gaps; it != NULL; it = it->next) {
-    gap = it->data;
-    if (gap->filled > 0) {
-      ++this->total_early_discarded;
-    }
-    this->total_packet_losts += gap->total - gap->filled;
-  }
-
-  g_list_free_full (this->gaps, g_free);
-  this->gaps = NULL;
-  this->result = NULL;
-  this->packet_received = 0;
-
-  THIS_WRITEUNLOCK (this);
-  return result;
-}
-
 
 guint32
-mprtpr_path_get_total_early_discarded_packets_num (MPRTPRPath * this)
+mprtpr_path_get_total_early_discarded_packets_num (MpRTPRPath * this)
 {
   guint32 result;
   THIS_READLOCK (this);
@@ -240,9 +304,8 @@ mprtpr_path_get_total_early_discarded_packets_num (MPRTPRPath * this)
   return result;
 }
 
-
 guint8
-mprtpr_path_get_id (MPRTPRPath * this)
+mprtpr_path_get_id (MpRTPRPath * this)
 {
   guint8 result;
   THIS_READLOCK (this);
@@ -252,44 +315,101 @@ mprtpr_path_get_id (MPRTPRPath * this)
 }
 
 
-static gint
-_cmp_guint64 (gconstpointer a, gconstpointer b, gpointer user_data)
+gboolean
+mprtpr_path_has_buffer_to_playout (MpRTPRPath * this)
 {
-  const guint64 *_a = a, *_b = b;
-  if (*_a == *_b) {
-    return 0;
+  gboolean result;
+  THIS_READLOCK (this);
+  result = this->packet_chain->play != NULL;
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+GstBuffer *
+mprtpr_path_pop_buffer_to_playout (MpRTPRPath * this, guint16 * abs_seq)
+{
+  GstBuffer *result = NULL;
+  PacketChain *chain;
+  MpRTPPacket *packet;
+  THIS_WRITELOCK (this);
+  chain = this->packet_chain;
+  packet = chain->play;
+  if (!packet)
+    goto done;
+  result = packet->buffer;
+  packet->buffer = NULL;
+  chain->play = packet->successor;
+  if (packet->gap) {
+    Gap *gap;
+    gap = packet->gap;
+    this->total_packet_losts += gap->total - gap->filled;
+    this->gaps = g_list_remove (this->gaps, gap);
+    packet->gap = NULL;
+    _trash_gap (this, gap);
   }
-  return *_a < *_b ? -1 : 1;
+  if (abs_seq) {
+    *abs_seq = packet->abs_seq_num;
+  }
+done:
+  THIS_WRITEUNLOCK (this);
+  return result;
+}
+
+void
+mprtpr_path_removes_obsolate_packets (MpRTPRPath * this)
+{
+  MpRTPPacket *actual, *next;
+  PacketChain *chain;
+  GstClockTime treshold;
+  THIS_WRITELOCK (this);
+  treshold = gst_clock_get_time (this->sysclock) - 2 * GST_SECOND;
+  chain = this->packet_chain;
+  if (!chain->head)
+    goto done;
+  for (actual = chain->head;
+      actual && actual != chain->play && actual->rcv_time < treshold;) {
+    g_print ("Obsolate packet: %p\n its tree: %p\n", actual, actual->tree);
+    if (actual->tree)
+      _remove_skew_tree (actual->tree, actual);
+    next = actual->next;
+    _trash_packet (this, actual);
+    chain->head = actual = next;
+  }
+  _balancing_skew_tree (this);
+done:
+  THIS_WRITEUNLOCK (this);
 }
 
 guint64
-mprtpr_path_get_packet_skew_median (MPRTPRPath * this)
+mprtpr_path_get_skew (MpRTPRPath * this)
 {
-  guint64 skews[100];
-  gint c;
-  GstClockTime treshold;
-  guint8 i;
-  guint64 result;
+  PacketChain *chain;
+  guint64 result = 10 * GST_MSECOND;
+  SkewTree *min_tree, *max_tree;
+  gint max_count, min_count;
+  MpRTPPacket *min_top, *max_top;
 
   THIS_WRITELOCK (this);
-  if (this->skews_read_index == this->skews_write_index) {
-    result = 0;
+  chain = this->packet_chain;
+  if (chain->counter < 2)
+    goto done;
+  if (chain->counter == 2) {
+    result = chain->head->next->skew;
     goto done;
   }
-  treshold = gst_clock_get_time (this->sysclock) - 2 * GST_SECOND;
-  for (c = 0; this->skews_read_index != this->skews_write_index;) {
-    i = this->skews_read_index;
-    if (++this->skews_read_index == 100) {
-      this->skews_read_index = 0;
-    }
-    if (this->received_times[i] < treshold) {
-      continue;
-    }
-    skews[c++] = this->skews[i];
-  }
-  this->skews_read_index = this->skews_write_index = 0;
-  g_qsort_with_data (skews, c, sizeof (guint64), _cmp_guint64, NULL);
-  result = skews[c >> 1];
+  min_tree = this->skew_min_tree;
+  max_tree = this->skew_max_tree;
+  min_count = GET_SKEW_TREE_NUM (min_tree);
+  max_count = GET_SKEW_TREE_NUM (max_tree);
+  min_top = GET_SKEW_TREE_TOP (min_tree);
+  max_top = GET_SKEW_TREE_TOP (max_tree);
+
+  if (min_count == max_count)
+    result = (min_top->skew + max_top->skew) >> 1;
+  else if (min_count < max_count)
+    result = max_top->skew;
+  else
+    result = min_top->skew;
 
 done:
   THIS_WRITEUNLOCK (this);
@@ -297,142 +417,460 @@ done:
 }
 
 void
-mprtpr_path_add_packet_skew (MPRTPRPath * this,
-    guint32 rtptime, guint32 clockrate)
+mprtpr_path_process_rtp_packet (MpRTPRPath * this,
+    GstRTPBuffer * rtp, guint16 packet_subflow_seq_num, GstClockTime snd_time)
 {
-  guint64 packet_skew, send_diff, recv_diff, last_ext_rtptime;
-  guint64 received;
+  MpRTPPacket *packet;
+
   THIS_WRITELOCK (this);
 
-  received = gst_clock_get_time (this->sysclock);
-  if (this->skew_initialized == FALSE) {
-    this->ext_rtptime =
-        gst_rtp_buffer_ext_timestamp (&this->ext_rtptime, rtptime);
-    this->last_received_time = received;
-    this->skew_initialized = TRUE;
-    goto done;
-  }
-  last_ext_rtptime = this->ext_rtptime;
-  this->ext_rtptime =
-      gst_rtp_buffer_ext_timestamp (&this->ext_rtptime, rtptime);
-
-  recv_diff = received - this->last_received_time;
-  if (recv_diff > 0x8000000000000000) {
-    recv_diff = 0;
-  }
-
-  send_diff = gst_util_uint64_scale_int (this->ext_rtptime - last_ext_rtptime,
-      GST_SECOND, clockrate);
-
-  if (send_diff > 0x8000000000000000) {
-    send_diff = 0;
-  }
-  if (send_diff == 0) {
-    goto done;
-  }
-  packet_skew = recv_diff - send_diff;
-  if (packet_skew > 0x8000000000000000) {
-    packet_skew = this->last_packet_skew;
-  }
-
-  this->jitter = this->jitter +
-      (((gfloat) packet_skew - (gfloat) this->jitter) / 16.);
-
-  this->last_packet_skew = packet_skew;
-  this->skews[this->skews_write_index] = this->last_packet_skew;
-
-  this->received_times[this->skews_write_index] = received;
-
-  if (++this->skews_write_index == 100) {
-    this->skews_write_index = 0;
-  }
-
-  if (this->skews_write_index == this->skews_read_index) {
-    if (++this->skews_read_index == 100) {
-      this->skews_read_index = 0;
-    }
-  }
-
-  this->ext_rtptime =
-      gst_rtp_buffer_ext_timestamp (&this->ext_rtptime, rtptime);
-  //this->last_sent_time = sent;
-  this->last_received_time = received;
-
-done:
-  THIS_WRITEUNLOCK (this);
-}
-
-
-void
-mprtpr_path_process_mprtp_packet (MPRTPRPath * this, GstBuffer * buf,
-    guint16 subflow_sequence)
-{
-  GList *it;
-  Gap *gap;
-  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
-  guint payload_size;
-  THIS_WRITELOCK (this);
-//  printf ("Packet is received by %d path receiver "
-//      "with %d relative sequence\n", this->id, subflow_sequence);
+  packet = _make_packet (this, rtp, packet_subflow_seq_num, snd_time);
 
   if (this->seq_initialized == FALSE) {
-    this->actual_seq = subflow_sequence;
-    this->HSN = subflow_sequence;
-    this->packet_received = 1;
+    this->actual_seq = packet_subflow_seq_num;
+    this->HSN = packet_subflow_seq_num;
     this->total_packet_received = 1;
     this->seq_initialized = TRUE;
-    this->result = g_list_prepend (this->result, buf);
+    //this->result = g_list_prepend (this->result, buf);
+    _add_packet (this, packet);
     goto done;
   }
   //goto mprtpr_path_process_rtpbuffer_end;
 
   //calculate lost, discarded and received packets
-  ++this->packet_received;
   ++this->total_packet_received;
-  if (0x8000 < this->HSN && subflow_sequence < 0x8000 &&
+  if (0x8000 < this->HSN && packet_subflow_seq_num < 0x8000 &&
       this->received_since_cycle_is_increased > 0x8888) {
     this->received_since_cycle_is_increased = 0;
     ++this->cycle_num;
   }
 
-  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
-  payload_size = gst_rtp_buffer_get_payload_len (&rtp);
-  gst_rtp_buffer_unmap (&rtp);
-
-  if (_cmp_seq (this->HSN, subflow_sequence) > 0) {
+  if (_cmp_seq (this->HSN, packet_subflow_seq_num) > 0) {
     ++this->total_late_discarded;
-    this->total_late_discarded_bytes += payload_size;
+    this->total_late_discarded_bytes += packet->payload_bytes;
     goto done;
   }
 
-  this->total_received_bytes += payload_size + (28 << 3);
-  if (subflow_sequence == (guint16) (this->actual_seq + 1)) {
+  _add_packet (this, packet);
+
+  this->total_received_bytes += packet->payload_bytes + (28 << 3);
+  if (packet_subflow_seq_num == (guint16) (this->actual_seq + 1)) {
     ++this->received_since_cycle_is_increased;
-    this->result = g_list_prepend (this->result, buf);
     ++this->actual_seq;
     goto done;
   }
-  if (_cmp_seq (this->actual_seq, subflow_sequence) < 0) {      //GAP
-    this->result = g_list_prepend (this->result, buf);
-    gap = _make_gap (this->result, this->actual_seq, subflow_sequence);
-    this->gaps = g_list_append (this->gaps, gap);
-    this->actual_seq = subflow_sequence;
+  if (_cmp_seq (this->actual_seq, packet_subflow_seq_num) < 0) {        //GAP
+    _make_gap (this, packet, this->actual_seq, packet_subflow_seq_num);
+    this->actual_seq = packet_subflow_seq_num;
     goto done;
   }
-  if (_cmp_seq (this->actual_seq, subflow_sequence) > 0 && _found_in_gaps (this->gaps, subflow_sequence, this->ext_header_id, &it, &gap) == TRUE) {     //Discarded
-    this->result =
-        g_list_insert_before (this->result, it != NULL ? it : gap->at, buf);
-    //this->result = dlist_pre_insert(this->result, it != NULL ? it : gap->at, rtp);
-    ++gap->filled;
-    goto done;
+  if (_cmp_seq (this->actual_seq, packet_subflow_seq_num) > 0) {
+    if (_try_fill_a_gap (this, packet))
+      goto done;
   }
   ++this->total_duplicated_packet_num;
+  gst_buffer_unref (packet->buffer);
+  packet->buffer = NULL;
 
 done:
   THIS_WRITEUNLOCK (this);
   return;
+
 }
 
+MpRTPPacket *
+_make_packet (MpRTPRPath * this,
+    GstRTPBuffer * rtp, guint16 packet_subflow_seq_num, GstClockTime snd_time)
+{
+  MpRTPPacket *result;
+  guint32 rtptime;
+  if (g_queue_is_empty (this->packets_pool)) {
+    result = (MpRTPPacket *) g_malloc0 (sizeof (MpRTPPacket));
+  } else {
+    result = g_queue_pop_head (this->packets_pool);
+  }
+
+  rtptime = gst_rtp_buffer_get_timestamp (rtp);
+  this->ext_rtptime =
+      gst_rtp_buffer_ext_timestamp (&this->ext_rtptime, rtptime);
+
+  result->buffer = rtp->buffer;
+  gst_buffer_ref (result->buffer);
+  result->left = NULL;
+  result->gap = NULL;
+  result->right = NULL;
+  result->parent = NULL;
+  result->next = NULL;
+  result->successor = NULL;
+  result->tree = NULL;
+  result->payload_bytes = gst_rtp_buffer_get_payload_len (rtp);
+  result->abs_seq_num = gst_rtp_buffer_get_seq (rtp);
+  result->rel_seq_num = packet_subflow_seq_num;
+  result->rcv_time = gst_clock_get_time (this->sysclock);
+  result->snd_time = snd_time;
+
+  result->delay = GST_CLOCK_DIFF (result->snd_time, result->rcv_time);
+//
+//  g_print("Packet->buf: %p\n"
+//          "Packet->payload_bytes: %u\n"
+//          "Packet->abs_seq: %hu\n"
+//          "Packet->rel_seq: %hu\n"
+//          "Packet->rcv_time: %lu\n"
+//          "Packet->snd_time: %lu\n", result->buffer, result->payload_bytes,
+//          result->abs_seq_num, result->rel_seq_num, result->rcv_time,
+//          result->snd_time);
+
+  return result;
+}
+
+void
+_trash_packet (MpRTPRPath * this, MpRTPPacket * packet)
+{
+  if (g_queue_get_length (this->packets_pool) < 256)
+    g_queue_push_head (this->packets_pool, packet);
+  else
+    g_free (packet);
+}
+
+void
+_add_packet (MpRTPRPath * this, MpRTPPacket * packet)
+{
+  PacketChain *chain;
+  chain = this->packet_chain;
+  if (!chain->head) {
+    chain->head = chain->play = chain->tail = packet;
+    goto done;
+  }
+
+  _chain_packets (this, chain->tail, packet);
+  chain->tail = chain->tail->successor = packet;
+
+  if (!chain->play)
+    chain->play = packet;
+  if (chain->counter < 3) {
+    goto done;
+  } else if (chain->counter == 3) {
+    _reset_skew_trees (this, chain->head->next, chain->head->next->next);
+    goto done;
+  }
+  //calculate everything
+  _add_packet_skew (this, packet);
+
+done:
+  ++chain->counter;
+  return;
+}
+
+
+void
+_chain_packets (MpRTPRPath * this, MpRTPPacket * actual, MpRTPPacket * next)
+{
+  guint64 snd_diff, rcv_diff;
+  //guint64 received;
+
+  rcv_diff = next->rcv_time - actual->rcv_time;
+  if (rcv_diff > 0x8000000000000000) {
+    rcv_diff = 0;
+  }
+
+  snd_diff = next->snd_time - actual->snd_time;
+  if (snd_diff > 0x8000000000000000) {
+    snd_diff = 0;
+  }
+
+  if (snd_diff == 0) {
+    GST_WARNING_OBJECT (this, "The skew between two packets NOT real");
+    goto done;
+  }
+
+  if (rcv_diff < snd_diff)
+    next->skew = snd_diff - rcv_diff;
+  else
+    next->skew = rcv_diff - snd_diff;
+
+//  g_print("RCV_DIFF: %lu SND_DIFF: %lu PACKET SKEW: %lu\n",
+//          rcv_diff, snd_diff, next->skew);
+  if (next->skew > 0x8000000000000000) {
+    GST_WARNING_OBJECT (this, "The skew between two packets NOT real");
+    next->skew = 0;
+    goto done;
+  }
+
+  this->jitter = this->jitter +
+      (((gfloat) next->skew - (gfloat) this->jitter) / 16.);
+
+done:
+  actual->next = next;
+  return;
+}
+
+void
+_ruin_packet_skew_tree (MpRTPRPath * this, SkewTree * tree)
+{
+  MpRTPPacket *packet;
+  packet = tree->root;
+  while (packet) {
+    packet = _remove_skew_tree (tree, packet);
+    _trash_packet (this, packet);
+  }
+  tree->root = NULL;
+  tree->counter = 0;
+  tree->top = NULL;
+}
+
+
+
+void
+_reset_skew_trees (MpRTPRPath * this, MpRTPPacket * first, MpRTPPacket * second)
+{
+  //make sure there is nothing in the trees
+  if (this->skew_max_tree)
+    _ruin_packet_skew_tree (this, this->skew_max_tree);
+  if (this->skew_min_tree)
+    _ruin_packet_skew_tree (this, this->skew_min_tree);
+
+  if (first->skew < second->skew) {
+    _insert_skew_tree (this->skew_max_tree, first);
+    _insert_skew_tree (this->skew_min_tree, second);
+  } else {
+    _insert_skew_tree (this->skew_min_tree, first);
+    _insert_skew_tree (this->skew_max_tree, second);
+  }
+}
+
+void
+_add_packet_skew (MpRTPRPath * this, MpRTPPacket * packet)
+{
+  SkewTree **tree;
+
+  tree = (GET_SKEW_TREE_TOP (this->skew_max_tree)->skew <
+      packet->skew) ? &this->skew_max_tree : &this->skew_min_tree;
+  (*tree)->root = _insert_skew_tree (*tree, packet);
+
+  _balancing_skew_tree (this);
+
+}
+
+void
+_balancing_skew_tree (MpRTPRPath * this)
+{
+  gint min_tree_num;
+  gint max_tree_num;
+  gint diff;
+  MpRTPPacket *packet;
+
+balancing:
+  min_tree_num = GET_SKEW_TREE_NUM (this->skew_min_tree);
+  max_tree_num = GET_SKEW_TREE_NUM (this->skew_max_tree);
+  diff = max_tree_num - min_tree_num;
+//  g_print("max_tree_num: %d, min_tree_num: %d\n", max_tree_num, min_tree_num);
+  if (-2 < diff && diff < 2) {
+    goto done;
+  }
+  if (diff < -1) {
+    packet = GET_SKEW_TREE_TOP (this->skew_min_tree);
+    this->skew_min_tree->root = _skew_tree_remove_top (this->skew_min_tree);
+
+    g_print
+        ("Balancing. From min to max packet: %p ->parent: %p ->left: %p ->right: %p\n",
+        packet, packet->parent, packet->left, packet->right);
+    this->skew_max_tree->root = _insert_skew_tree (this->skew_max_tree, packet);
+  } else if (1 < diff) {
+    packet = GET_SKEW_TREE_TOP (this->skew_max_tree);
+    this->skew_max_tree->root = _skew_tree_remove_top (this->skew_max_tree);
+
+    g_print
+        ("Balancing. From max to min packet: %p ->parent: %p ->left: %p ->right: %p\n",
+        packet, packet->parent, packet->left, packet->right);
+    this->skew_min_tree->root = _insert_skew_tree (this->skew_min_tree, packet);
+  }
+  goto balancing;
+
+done:
+  return;
+}
+
+
+MpRTPPacket *
+_insert_skew_tree (SkewTree * tree, MpRTPPacket * packet)
+{
+  MpRTPPacket *node, *parent = NULL;
+  g_print ("BEFORE INSERTING %p: \n", packet);
+  _print_tree (tree, tree->root, 0);
+  if (!tree->root) {
+    g_print ("There is no root\n");
+    tree->root = tree->top = packet;
+    packet->parent = packet->left = packet->right = NULL;
+    goto done;
+  }
+  node = tree->root;
+  while (node) {
+    parent = node;
+    node = tree->cmp (parent, packet) < 0 ? node->right : node->left;
+  }
+  g_print ("The parent element is: %p ->left: %p ->right:%p\n",
+      parent, parent->left, parent->right);
+  if (tree->cmp (parent, packet) < 0) {
+    parent->right = packet;
+    if (tree->cmp (tree->top, packet) < 0) {
+      tree->top = packet;
+      g_print ("NEW TOP IS SELECTED AT INSERT: %p\n", tree->top);
+    }
+  } else {
+    parent->left = packet;
+  }
+  packet->parent = parent;
+  g_print ("After done the packet %p ->parent: %p ->left: %p ->right :%p\n",
+      packet, packet->parent, packet->left, packet->right);
+done:
+  packet->tree = tree;
+  ++tree->counter;
+  g_print ("AFTER INSERTING %p: \n", packet);
+  _print_tree (tree, tree->root, 0);
+  return tree->root;
+}
+
+MpRTPPacket *
+_remove_skew_tree (SkewTree * tree, MpRTPPacket * packet)
+{
+  MpRTPPacket *parent = NULL;
+  MpRTPPacket *candidate = NULL;
+  g_print ("BEFORE REMOVING %p: \n", packet);
+  _print_tree (tree, tree->root, 0);
+  if (!packet->left && !packet->right) {
+    candidate = NULL;
+    goto done;
+  }
+  if (!packet->left) {
+    candidate = packet->right;
+    goto done;
+  } else if (!packet->right) {
+    candidate = packet->left;
+    goto done;
+  }
+  for (candidate = packet->left; candidate->right;
+      candidate = candidate->right);
+  _remove_skew_tree (tree, candidate);
+
+done:
+  if (packet == tree->top) {
+    MpRTPPacket *right;
+    g_print ("%p TOP:%p ->parent:%p, left:%p\n",
+        tree, packet, packet->parent, packet->left);
+    if (packet->left) {
+      tree->top = packet->left;
+      for (right = packet->left->right; right;
+          tree->top = right, right = right->right);
+    } else {
+      tree->top = packet->parent;
+    }
+    g_print ("NEW TOP IS SELECTED AT REMOVE: %p\n", tree->top);
+//    g_print("%p removing operation NEW top: %lu\n", tree, tree->top->skew);
+  }
+  if (candidate)
+    candidate->parent = packet->parent;
+  if (packet->left)
+    packet->left->parent = candidate;
+  if (packet->right)
+    packet->right->parent = candidate;
+  if (!packet->parent) {
+    tree->root = candidate;
+  } else {
+    parent = packet->parent;
+    if (parent->left == packet)
+      parent->left = candidate;
+    else
+      parent->right = candidate;
+  }
+  packet->tree = NULL;
+  packet->left = packet->right = packet->parent = NULL;
+  --tree->counter;
+  g_print ("AFTER REMOVING %p: \n", packet);
+  _print_tree (tree, tree->root, 0);
+  return tree->root;
+}
+
+
+void
+_make_gap (MpRTPRPath * this, MpRTPPacket * at, guint16 start, guint16 end)
+{
+  Gap *gap;
+  guint16 counter;
+  if (g_queue_is_empty (this->gaps_pool))
+    gap = g_malloc0 (sizeof (Gap));
+  else
+    gap = (Gap *) g_queue_pop_head (this->gaps_pool);
+
+  gap->at = at;
+  gap->start = start;
+  gap->end = end;
+  gap->filled = 0;
+  gap->total = 1;
+  for (counter = gap->start + 1;
+      counter != (guint16) (gap->end - 1); ++counter, ++gap->total);
+  this->gaps = g_list_prepend (this->gaps, gap);
+  at->gap = gap;
+
+}
+
+void
+_trash_gap (MpRTPRPath * this, Gap * gap)
+{
+  if (g_queue_get_length (this->gaps_pool) > 100)
+    g_free (gap);
+  else
+    g_queue_push_head (this->gaps_pool, gap);
+}
+
+
+gboolean
+_try_fill_a_gap (MpRTPRPath * this, MpRTPPacket * packet)
+{
+  gboolean result;
+  GList *it;
+  Gap *gap;
+  gint cmp;
+  MpRTPPacket *pred;
+  MpRTPPacket *succ;
+
+  result = FALSE;
+  for (it = this->gaps; it; it = it->next, gap = NULL) {
+    gap = it->data;
+    cmp = _cmp_seq (gap->start, packet->rel_seq_num);
+    if (cmp > 0)
+      continue;
+    if (cmp == 0)
+      goto done;
+
+    cmp = _cmp_seq (packet->rel_seq_num, gap->end);
+    if (cmp > 0)
+      continue;
+    if (cmp == 0)
+      goto done;
+    break;
+  }
+
+  if (!gap)
+    goto done;
+
+  for (pred = gap->at; pred->rel_seq_num != gap->end; pred = pred->successor) {
+    succ = pred->successor;
+    cmp = _cmp_seq (packet->rel_seq_num, succ->rel_seq_num);
+    if (cmp > 0)
+      break;
+    succ = NULL;
+  }
+
+  if (!succ)
+    goto done;
+
+  pred->successor = packet;
+  packet->successor = succ;
+  result = TRUE;
+
+done:
+  return result;
+}
 
 
 gint
@@ -452,99 +890,21 @@ _cmp_seq (guint16 x, guint16 y)
 
 }
 
-Gap *
-_make_gap (GList * at, guint16 start, guint16 end)
+gint
+_cmp_for_max (MpRTPPacket * x, MpRTPPacket * y)
 {
-  Gap *result = g_new0 (Gap, 1);
-  guint16 counter;
-
-  result->at = at;
-  result->start = start;
-  result->end = end;
-  //_mprtp_buffer_get_sequence_num(at->data, &result->end);
-  //result->active = BOOL_TRUE;
-  result->total = 1;
-  for (counter = result->start + 1;
-      counter != (guint16) (result->end - 1); ++counter, ++result->total);
-  //printf("Make Gap: start: %d - end: %d, missing: %d\n",result->start, result->end, result->total);
-  return result;
+  return x->skew == y->skew ? 0 : x->skew < y->skew ? -1 : 1;
 }
 
-gboolean
-_found_in_gaps (GList * gaps,
-    guint16 actual_subflow_sequence,
-    guint8 ext_header_id, GList ** result_item, Gap ** result_gap)
+gint
+_cmp_for_min (MpRTPPacket * x, MpRTPPacket * y)
 {
-
-  Gap *gap;
-  GList *it;
-  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
-  GstBuffer *buf;
-  gint32 cmp;
-  guint16 rtp_subflow_sequence;
-  for (it = gaps; it != NULL; it = it->next) {
-    gap = (Gap *) it->data;
-    /*
-       printf("\nGap total: %d; Filled: %d Start seq:%d End seq:%d\n",
-       gap->total, gap->filled, gap->start, gap->end);
-     */
-    //if(gap->active == BOOL_FALSE){
-    if (gap->filled == gap->total) {
-      continue;
-    }
-    if (_cmp_seq (gap->start, actual_subflow_sequence) <= 0
-        && _cmp_seq (actual_subflow_sequence, gap->end) <= 0) {
-      break;
-    }
-
-  }
-  if (it == NULL) {
-    return FALSE;
-  }
-  if (result_gap != NULL) {
-    *result_gap = gap;
-  }
-
-  for (it = gap->at; it != NULL; it = it->next) {
-    //rtp = it->data;
-    buf = it->data;
-    gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
-    rtp_subflow_sequence = _mprtp_buffer_get_sequence_num (&rtp, ext_header_id);
-    cmp = _cmp_seq (rtp_subflow_sequence, actual_subflow_sequence);
-    gst_rtp_buffer_unmap (&rtp);
-    //printf("packet_s: %d, actual_s: %d\n",packet->sequence, actual->sequence);
-    if (cmp > 0) {
-      continue;
-    }
-    if (cmp == 0) {
-      return FALSE;
-    }
-    break;
-  }
-  if (result_item != NULL) {
-    *result_item = it;
-    //printf("result_item: %d",((packet_t*)it->next->data)->sequence);
-  }
-  return TRUE;
+  return x->skew == y->skew ? 0 : x->skew < y->skew ? 1 : -1;
 }
 
-
-guint16
-_mprtp_buffer_get_sequence_num (GstRTPBuffer * rtp, guint8 MPRTP_EXT_HEADER_ID)
-{
-  gpointer pointer = NULL;
-  guint size = 0;
-  MPRTPSubflowHeaderExtension *ext_header;
-  if (!gst_rtp_buffer_get_extension_onebyte_header (rtp, MPRTP_EXT_HEADER_ID, 0,
-          &pointer, &size)) {
-    GST_WARNING
-        ("The requested rtp buffer doesn't contain one byte header extension with id: %d",
-        MPRTP_EXT_HEADER_ID);
-    return FALSE;
-  }
-  ext_header = (MPRTPSubflowHeaderExtension *) pointer;
-  return ext_header->seq;
-}
+#undef GET_SKEW_TREE_TOP
+#undef GET_SKEW_TREE_NUM
+#undef _skew_tree_remove_top
 
 #undef THIS_READLOCK
 #undef THIS_READUNLOCK

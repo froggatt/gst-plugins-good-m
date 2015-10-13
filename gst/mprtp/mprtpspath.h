@@ -14,10 +14,12 @@
 #include "gstmprtcpbuffer.h"
 
 #define MPRTP_DEFAULT_EXTENSION_HEADER_ID 3
+#define ABS_TIME_DEFAULT_EXTENSION_HEADER_ID 8
 
 G_BEGIN_DECLS typedef struct _MPRTPSPath MPRTPSPath;
 typedef struct _MPRTPSPathClass MPRTPSPathClass;
 typedef struct _MPRTPSubflowHeaderExtension MPRTPSubflowHeaderExtension;
+typedef struct _RTPAbsTimeExtension RTPAbsTimeExtension;
 
 #define MPRTPS_PATH_TYPE             (mprtps_path_get_type())
 #define MPRTPS_PATH(src)             (G_TYPE_CHECK_INSTANCE_CAST((src),MPRTPS_PATH_TYPE,MPRTPSPath))
@@ -32,6 +34,11 @@ struct _MPRTPSubflowHeaderExtension
 {
   guint8 id;
   guint16 seq;
+};
+
+struct _RTPAbsTimeExtension
+{
+  guint8 time[3];
 };
 
 typedef enum
