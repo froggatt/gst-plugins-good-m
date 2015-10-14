@@ -440,13 +440,13 @@ mprtpr_path_get_skew (MpRTPRPath * this)
   max_top = GET_SKEW_TREE_TOP (max_tree);
 
   if (min_count == max_count) {
-    g_print ("MnT: %lu MxT: %lu\n", min_top, max_top);
+//    g_print ("MnT: %lu MxT: %lu\n", min_top, max_top);
     result = (min_top + max_top) >> 1;
   } else if (min_count < max_count) {
-    g_print ("MxT: %lu\n", max_top);
+//    g_print ("MxT: %lu\n", max_top);
     result = max_top;
   } else {
-    g_print ("MnT: %lu\n", min_top);
+//    g_print ("MnT: %lu\n", min_top);
     result = min_top;
   }
 
@@ -603,15 +603,15 @@ _add_packet (MpRTPRPath * this, Packet * packet)
 
   _chain_packets (this, chain->tail, packet);
   chain->tail = chain->tail->successor = packet;
-  g_print ("ADD PACKET CALLED WITH SKEW %lu\n", packet->skew);
+  GST_DEBUG_OBJECT (this, "ADD PACKET CALLED WITH SKEW %lu\n", packet->skew);
   if (!chain->play)
     chain->play = packet;
 
   if (++chain->counter < 3) {
-    g_print ("CHAIN COUNTER SMALLER THAN 3\n");
+    GST_DEBUG_OBJECT (this, "CHAIN COUNTER SMALLER THAN 3\n");
     goto done;
   } else if (chain->counter == 3) {
-    g_print ("CHAIN COUNTER IS 3\n");
+    GST_DEBUG_OBJECT (this, "CHAIN COUNTER IS 3\n");
     _reset_skew_trees (this, chain->head->next->skew,
         chain->head->next->next->skew);
     goto done;
@@ -705,7 +705,8 @@ _reset_skew_trees (MpRTPRPath * this, guint64 first, guint64 second)
 void
 _add_packet_skew (MpRTPRPath * this, guint64 skew)
 {
-  g_print ("ADD PACKET SKEW CALLED WITH MAX TREE TOP %lu, SKEW TO ADD IS %lu\n",
+  GST_DEBUG_OBJECT (this,
+      "ADD PACKET SKEW CALLED WITH MAX TREE TOP %lu, SKEW TO ADD IS %lu\n",
       GET_SKEW_TREE_TOP (this->skew_max_tree), skew);
   if (GET_SKEW_TREE_TOP (this->skew_max_tree) < skew)
     _insert_skew_tree (this, this->skew_min_tree, skew, 1);
@@ -720,8 +721,8 @@ _add_packet_skew (MpRTPRPath * this, guint64 skew)
 void
 _remove_skew (MpRTPRPath * this, guint64 skew)
 {
-  g_print ("REMOVE SKEW CALLED WITH %lu MAX TREE TOP IS %lu\n", skew,
-      GET_SKEW_TREE_TOP (this->skew_max_tree));
+  GST_DEBUG_OBJECT (this, "REMOVE SKEW CALLED WITH %lu MAX TREE TOP IS %lu\n",
+      skew, GET_SKEW_TREE_TOP (this->skew_max_tree));
   if (GET_SKEW_TREE_TOP (this->skew_max_tree) < skew) {
     _remove_skew_tree (this, this->skew_min_tree, skew, NULL);
   } else {
@@ -776,7 +777,7 @@ _insert_skew (MpRTPRPath * this,
     return _make_skew (this, value, ref_count);
   cmp_result = cmp (node->value, value);
   if (!cmp_result) {
-    g_print ("DUPLICATED: %lu", value);
+    GST_DEBUG_OBJECT (this, "DUPLICATED: %lu", value);
     return ++node->ref, node;
   } else if (cmp_result < 0)
     node->right = _insert_skew (this, node->right, cmp, value, ref_count);
@@ -795,7 +796,7 @@ _insert_skew_tree (MpRTPRPath * this, SkewTree * tree,
   if (tree->cmp (tree->top, value) < 0)
     tree->top = value;
 
-  g_print ("INSERT %s CALLED FOR %lu, TOP is %lu\n",
+  GST_DEBUG_OBJECT (this, "INSERT %s CALLED FOR %lu, TOP is %lu\n",
       tree->name, value, tree->top);
 //  _print_tree(tree, tree->root, 0);
 }
