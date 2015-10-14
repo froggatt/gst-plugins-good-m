@@ -5,6 +5,7 @@
 
 #include <gst/rtp/gstrtpbuffer.h>
 #include <gst/rtp/gstrtcpbuffer.h>
+#include <stdio.h>
 #include "mprtprpath.h"
 #include "mprtpspath.h"
 #include "gstmprtcpbuffer.h"
@@ -22,45 +23,50 @@ G_DEFINE_TYPE (MpRTPRPath, mprtpr_path, G_TYPE_OBJECT);
 
 #define GET_SKEW_TREE_TOP(tree) (tree->top)
 #define GET_SKEW_TREE_NUM(tree) (tree->counter)
-#define _skew_tree_remove_top(tree) _remove_skew_tree(tree, tree->top)
 
 typedef struct _Gap Gap;
+typedef struct _Packet Packet;
+typedef struct _Skew Skew;
 
 struct _Gap
 {
-  MpRTPPacket *at;
+  Packet *at;
   guint16 start;
   guint16 end;
   guint16 total;
   guint16 filled;
 };
 
+struct _Skew
+{
+  Skew *left, *right;
+  guint64 value;
+  guint ref;
+};
+
 struct _SkewTree
 {
-  MpRTPPacket *root;
-  MpRTPPacket *top;
-    gint (*cmp) (MpRTPPacket *, MpRTPPacket *);
+  Skew *root;
+  guint64 top;
+    gint (*cmp) (guint64, guint64);
   gint counter;
+  gchar name[255];
 };
 
 struct _SkewChain
 {
-  MpRTPPacket *head, *tail, *play;
+  Packet *head, *tail, *play;
   gint counter;
 };
 
 
-struct _MpRTPPacket
+struct _Packet
 {
   GstBuffer *buffer;
   GstClockTime arrival;
   GstClockTimeDiff interleave;
-  MpRTPPacket *next;
-  MpRTPPacket *successor;
-  MpRTPPacket *left;
-  MpRTPPacket *right;
-  MpRTPPacket *parent;
-  SkewTree *tree;
+  Packet *next;
+  Packet *successor;
   Gap *gap;
   guint32 payload_bytes;
   guint16 abs_seq_num;
@@ -75,44 +81,56 @@ struct _MpRTPPacket
 static void mprtpr_path_finalize (GObject * object);
 static void mprtpr_path_reset (MpRTPRPath * this);
 
-static MpRTPPacket *_make_packet (MpRTPRPath * this,
+static Packet *_make_packet (MpRTPRPath * this,
     GstRTPBuffer * rtp, guint16 packet_subflow_seq_num, GstClockTime snd_time);
-static void _trash_packet (MpRTPRPath * this, MpRTPPacket * packet);
-static void _add_packet (MpRTPRPath * this, MpRTPPacket * packet);
+static void _trash_packet (MpRTPRPath * this, Packet * packet);
+static void _add_packet (MpRTPRPath * this, Packet * packet);
+static void _chain_packets (MpRTPRPath * this, Packet * actual, Packet * next);
+static void _ruin_skew_tree (MpRTPRPath * this, SkewTree * tree);
 static void
-_chain_packets (MpRTPRPath * this, MpRTPPacket * actual, MpRTPPacket * next);
-static void _ruin_packet_skew_tree (MpRTPRPath * this, SkewTree * tree);
-static void
-_reset_skew_trees (MpRTPRPath * this, MpRTPPacket * first,
-    MpRTPPacket * second);
-static void _add_packet_skew (MpRTPRPath * this, MpRTPPacket * packet);
+_reset_skew_trees (MpRTPRPath * this, guint64 first, guint64 second);
+static void _add_packet_skew (MpRTPRPath * this, guint64 skew);
 static void _balancing_skew_tree (MpRTPRPath * this);
-static MpRTPPacket *_insert_skew_tree (SkewTree * tree, MpRTPPacket * packet);
-static MpRTPPacket *_remove_skew_tree (SkewTree * tree, MpRTPPacket * packet);
 static void
-_make_gap (MpRTPRPath * this, MpRTPPacket * at, guint16 start, guint16 end);
+_insert_skew_tree (MpRTPRPath * this, SkewTree * tree, guint64 value,
+    guint ref_count);
+static Skew *_insert_skew (MpRTPRPath * this, Skew * node, gint (*cmp) (guint64,
+        guint64), guint64 value, guint ref_count);
+static void _remove_skew (MpRTPRPath * this, guint64 skew);
+static void
+_remove_skew_tree (MpRTPRPath * this, SkewTree * tree, guint64 value,
+    guint * ref_count);
+static void
+_remove_skew_value_from_tree (MpRTPRPath * this, SkewTree * tree,
+    guint64 value, guint * ref_count);
+static guint64 _get_new_top_skew (Skew * node);
+static void
+_make_gap (MpRTPRPath * this, Packet * at, guint16 start, guint16 end);
 static void _trash_gap (MpRTPRPath * this, Gap * gap);
-static gboolean _try_fill_a_gap (MpRTPRPath * this, MpRTPPacket * packet);
+static Skew *_make_skew (MpRTPRPath * this, guint64 skew, guint ref_count);
+static void _trash_skew (MpRTPRPath * this, Skew * skew);
+static gboolean _try_fill_a_gap (MpRTPRPath * this, Packet * packet);
 static gint _cmp_seq (guint16 x, guint16 y);
-static gint _cmp_for_max (MpRTPPacket * x, MpRTPPacket * y);
-static gint _cmp_for_min (MpRTPPacket * x, MpRTPPacket * y);
-
-void static
-_print_tree (SkewTree * tree, MpRTPPacket * node, gint level)
-{
-  gint i;
-  if (node == NULL) {
-    return;
-  }
-  if (!level)
-    g_print ("Tree %p TOP is: %p \n", tree, tree->top);
-  for (i = 0; i < level && i < 10; ++i)
-    g_print ("--");
-  g_print ("%d->%p->skew:%lu ->parent: %p ->left:%p ->right:%p\n",
-      level, node, node->skew, node->parent, node->left, node->right);
-  _print_tree (tree, node->left, level + 1);
-  _print_tree (tree, node->right, level + 1);
-}
+static gint _cmp_for_max (guint64 x, guint64 y);
+static gint _cmp_for_min (guint64 x, guint64 y);
+#define _print_tree(tree, node, level)
+//
+//void static
+//_print_tree (SkewTree * tree, Skew* node, gint level)
+//{
+//  gint i;
+//  if (node == NULL) {
+//    return;
+//  }
+//  if (!level)
+//    g_print ("Tree %p TOP is: %lu \n", tree, tree->top);
+//  for (i = 0; i < level && i < 10; ++i)
+//    g_print ("--");
+//  g_print ("%d->%p->value:%lu ->ref: %u ->left:%p ->right:%p\n",
+//      level, node, node->value, node->ref, node->left, node->right);
+//  _print_tree (tree, node->left, level + 1);
+//  _print_tree (tree, node->right, level + 1);
+//}
 
 
 void
@@ -149,12 +167,15 @@ mprtpr_path_init (MpRTPRPath * this)
   this->sysclock = gst_system_clock_obtain ();
   this->packet_chain = (PacketChain *) g_malloc0 (sizeof (PacketChain));
   this->packets_pool = g_queue_new ();
+  this->skews_pool = gst_queue_array_new (1024);
   this->gaps_pool = g_queue_new ();
   this->skew_max_tree = g_malloc0 (sizeof (SkewTree));
+  sprintf (this->skew_max_tree->name, "Max Tree");
   this->skew_min_tree = g_malloc0 (sizeof (SkewTree));
+  sprintf (this->skew_min_tree->name, "Min Tree");
   this->skew_max_tree->cmp = _cmp_for_max;
   this->skew_min_tree->cmp = _cmp_for_min;
-
+  this->last_median = GST_MSECOND;
   mprtpr_path_reset (this);
 }
 
@@ -169,6 +190,10 @@ mprtpr_path_finalize (GObject * object)
     g_free (g_queue_pop_head (this->packets_pool));
   while (g_queue_is_empty (this->gaps_pool))
     g_free (g_queue_pop_head (this->gaps_pool));
+  //  while (g_queue_is_empty (this->skews_pool))
+  //    g_free (g_queue_pop_head (this->skews_pool));
+  while (gst_queue_array_is_empty (this->skews_pool))
+    g_free (gst_queue_array_pop_head (this->skews_pool));
   g_free (this->skew_max_tree);
   g_free (this->skew_min_tree);
 
@@ -321,6 +346,11 @@ mprtpr_path_has_buffer_to_playout (MpRTPRPath * this)
   gboolean result;
   THIS_READLOCK (this);
   result = this->packet_chain->play != NULL;
+//  {
+//    Packet *p;gint i = 0;
+//    for(p = this->packet_chain->play; p; p = p->successor, ++i);
+//    g_print("Waiting for playout: %d number of items in the chain: %d\n", i, this->packet_chain->counter);
+//  }
   THIS_READUNLOCK (this);
   return result;
 }
@@ -330,7 +360,7 @@ mprtpr_path_pop_buffer_to_playout (MpRTPRPath * this, guint16 * abs_seq)
 {
   GstBuffer *result = NULL;
   PacketChain *chain;
-  MpRTPPacket *packet;
+  Packet *packet;
   THIS_WRITELOCK (this);
   chain = this->packet_chain;
   packet = chain->play;
@@ -351,6 +381,8 @@ mprtpr_path_pop_buffer_to_playout (MpRTPRPath * this, guint16 * abs_seq)
     *abs_seq = packet->abs_seq_num;
   }
 done:
+//  g_print("packet abs seq: %p %hu packets in chain: %hu\n",
+//          chain->play, packet->abs_seq_num, chain->counter);
   THIS_WRITEUNLOCK (this);
   return result;
 }
@@ -358,23 +390,25 @@ done:
 void
 mprtpr_path_removes_obsolate_packets (MpRTPRPath * this)
 {
-  MpRTPPacket *actual, *next;
+  Packet *actual, *next = NULL;
   PacketChain *chain;
   GstClockTime treshold;
+  gint num = 0;
   THIS_WRITELOCK (this);
   treshold = gst_clock_get_time (this->sysclock) - 2 * GST_SECOND;
   chain = this->packet_chain;
   if (!chain->head)
     goto done;
-  for (actual = chain->head;
-      actual && actual != chain->play && actual->rcv_time < treshold;) {
-    g_print ("Obsolate packet: %p\n its tree: %p\n", actual, actual->tree);
-    if (actual->tree)
-      _remove_skew_tree (actual->tree, actual);
+  for (actual = chain->head; actual && actual->rcv_time < treshold;) {
+    if (actual->skew)
+      _remove_skew (this, actual->skew);
     next = actual->next;
     _trash_packet (this, actual);
     chain->head = actual = next;
+    --chain->counter;
+    ++num;
   }
+//  g_print("Obsolate next: %p - %d packets\n", next, num);
   _balancing_skew_tree (this);
 done:
   THIS_WRITEUNLOCK (this);
@@ -384,12 +418,13 @@ guint64
 mprtpr_path_get_skew (MpRTPRPath * this)
 {
   PacketChain *chain;
-  guint64 result = 10 * GST_MSECOND;
+  guint64 result;
   SkewTree *min_tree, *max_tree;
   gint max_count, min_count;
-  MpRTPPacket *min_top, *max_top;
+  guint64 min_top, max_top;
 
   THIS_WRITELOCK (this);
+  result = this->last_median;
   chain = this->packet_chain;
   if (chain->counter < 2)
     goto done;
@@ -404,14 +439,36 @@ mprtpr_path_get_skew (MpRTPRPath * this)
   min_top = GET_SKEW_TREE_TOP (min_tree);
   max_top = GET_SKEW_TREE_TOP (max_tree);
 
-  if (min_count == max_count)
-    result = (min_top->skew + max_top->skew) >> 1;
-  else if (min_count < max_count)
-    result = max_top->skew;
-  else
-    result = min_top->skew;
+  if (min_count == max_count) {
+    g_print ("MnT: %lu MxT: %lu\n", min_top, max_top);
+    result = (min_top + max_top) >> 1;
+  } else if (min_count < max_count) {
+    g_print ("MxT: %lu\n", max_top);
+    result = max_top;
+  } else {
+    g_print ("MnT: %lu\n", min_top);
+    result = min_top;
+  }
 
 done:
+  this->last_median = result;
+//  {
+//    Packet *p, *mp = NULL;
+//    gint i;
+//    guint64 min = 0xffffffffffffffffUL, last = 0;
+//    for(i=0; i<this->packet_chain->counter; ++i) {
+//      for(p=this->packet_chain->head; p; p = p->successor)
+//        min = p->skew < min && p->skew > last? mp = p, p->skew : min;
+//      g_print("%lu-", mp->skew);
+//      last = min;
+//      min = 0xffffffffffffffffUL;
+//    }
+//    g_print("\n%p %d MEDIAN: %lu<-%d = %d + %d\n",
+//            this, this->id, result, chain->counter,
+//            this->skew_max_tree->counter,
+//            this->skew_min_tree->counter);
+//  }
+
   THIS_WRITEUNLOCK (this);
   return result;
 }
@@ -420,7 +477,7 @@ void
 mprtpr_path_process_rtp_packet (MpRTPRPath * this,
     GstRTPBuffer * rtp, guint16 packet_subflow_seq_num, GstClockTime snd_time)
 {
-  MpRTPPacket *packet;
+  Packet *packet;
 
   THIS_WRITELOCK (this);
 
@@ -478,16 +535,18 @@ done:
 
 }
 
-MpRTPPacket *
+Packet *
 _make_packet (MpRTPRPath * this,
     GstRTPBuffer * rtp, guint16 packet_subflow_seq_num, GstClockTime snd_time)
 {
-  MpRTPPacket *result;
+  Packet *result;
   guint32 rtptime;
   if (g_queue_is_empty (this->packets_pool)) {
-    result = (MpRTPPacket *) g_malloc0 (sizeof (MpRTPPacket));
+    result = (Packet *) g_malloc0 (sizeof (Packet));
+//    g_print("Created - ");
   } else {
     result = g_queue_pop_head (this->packets_pool);
+//    g_print("Pooled - ");
   }
 
   rtptime = gst_rtp_buffer_get_timestamp (rtp);
@@ -496,19 +555,15 @@ _make_packet (MpRTPRPath * this,
 
   result->buffer = rtp->buffer;
   gst_buffer_ref (result->buffer);
-  result->left = NULL;
   result->gap = NULL;
-  result->right = NULL;
-  result->parent = NULL;
   result->next = NULL;
   result->successor = NULL;
-  result->tree = NULL;
   result->payload_bytes = gst_rtp_buffer_get_payload_len (rtp);
   result->abs_seq_num = gst_rtp_buffer_get_seq (rtp);
   result->rel_seq_num = packet_subflow_seq_num;
   result->rcv_time = gst_clock_get_time (this->sysclock);
   result->snd_time = snd_time;
-
+  result->skew = 0;
   result->delay = GST_CLOCK_DIFF (result->snd_time, result->rcv_time);
 //
 //  g_print("Packet->buf: %p\n"
@@ -524,46 +579,56 @@ _make_packet (MpRTPRPath * this,
 }
 
 void
-_trash_packet (MpRTPRPath * this, MpRTPPacket * packet)
+_trash_packet (MpRTPRPath * this, Packet * packet)
 {
-  if (g_queue_get_length (this->packets_pool) < 256)
-    g_queue_push_head (this->packets_pool, packet);
-  else
+  if (g_queue_get_length (this->packets_pool) < 2048) {
+    g_queue_push_tail (this->packets_pool, packet);
+//    g_print("Recycle %d- ", g_queue_get_length (this->packets_pool));
+  } else {
     g_free (packet);
+//    g_print("Freed - ");
+  }
 }
 
 void
-_add_packet (MpRTPRPath * this, MpRTPPacket * packet)
+_add_packet (MpRTPRPath * this, Packet * packet)
 {
   PacketChain *chain;
   chain = this->packet_chain;
   if (!chain->head) {
     chain->head = chain->play = chain->tail = packet;
+    chain->counter = 1;
     goto done;
   }
 
   _chain_packets (this, chain->tail, packet);
   chain->tail = chain->tail->successor = packet;
-
+  g_print ("ADD PACKET CALLED WITH SKEW %lu\n", packet->skew);
   if (!chain->play)
     chain->play = packet;
-  if (chain->counter < 3) {
+
+  if (++chain->counter < 3) {
+    g_print ("CHAIN COUNTER SMALLER THAN 3\n");
     goto done;
   } else if (chain->counter == 3) {
-    _reset_skew_trees (this, chain->head->next, chain->head->next->next);
+    g_print ("CHAIN COUNTER IS 3\n");
+    _reset_skew_trees (this, chain->head->next->skew,
+        chain->head->next->next->skew);
     goto done;
   }
   //calculate everything
-  _add_packet_skew (this, packet);
+  _add_packet_skew (this, packet->skew);
+
 
 done:
-  ++chain->counter;
+  //++chain->counter;
+  //g_print("Packets in the chain: %d\n", chain->counter);
   return;
 }
 
 
 void
-_chain_packets (MpRTPRPath * this, MpRTPPacket * actual, MpRTPPacket * next)
+_chain_packets (MpRTPRPath * this, Packet * actual, Packet * next)
 {
   guint64 snd_diff, rcv_diff;
   //guint64 received;
@@ -605,49 +670,67 @@ done:
 }
 
 void
-_ruin_packet_skew_tree (MpRTPRPath * this, SkewTree * tree)
+_ruin_skew_tree (MpRTPRPath * this, SkewTree * tree)
 {
-  MpRTPPacket *packet;
-  packet = tree->root;
-  while (packet) {
-    packet = _remove_skew_tree (tree, packet);
-    _trash_packet (this, packet);
+  guint ref_count;
+  while (tree->root) {
+//      g_print("Tree top: %lu\n", tree->top);
+    _remove_skew_tree (this, tree, tree->top, &ref_count);
   }
   tree->root = NULL;
   tree->counter = 0;
-  tree->top = NULL;
+  tree->top = 0;
 }
 
 
 
 void
-_reset_skew_trees (MpRTPRPath * this, MpRTPPacket * first, MpRTPPacket * second)
+_reset_skew_trees (MpRTPRPath * this, guint64 first, guint64 second)
 {
   //make sure there is nothing in the trees
   if (this->skew_max_tree)
-    _ruin_packet_skew_tree (this, this->skew_max_tree);
+    _ruin_skew_tree (this, this->skew_max_tree);
   if (this->skew_min_tree)
-    _ruin_packet_skew_tree (this, this->skew_min_tree);
+    _ruin_skew_tree (this, this->skew_min_tree);
 
-  if (first->skew < second->skew) {
-    _insert_skew_tree (this->skew_max_tree, first);
-    _insert_skew_tree (this->skew_min_tree, second);
+  if (first < second) {
+    _insert_skew_tree (this, this->skew_max_tree, first, 1);
+    _insert_skew_tree (this, this->skew_min_tree, second, 1);
   } else {
-    _insert_skew_tree (this->skew_min_tree, first);
-    _insert_skew_tree (this->skew_max_tree, second);
+    _insert_skew_tree (this, this->skew_min_tree, first, 1);
+    _insert_skew_tree (this, this->skew_max_tree, second, 1);
   }
 }
 
 void
-_add_packet_skew (MpRTPRPath * this, MpRTPPacket * packet)
+_add_packet_skew (MpRTPRPath * this, guint64 skew)
 {
-  SkewTree **tree;
-
-  tree = (GET_SKEW_TREE_TOP (this->skew_max_tree)->skew <
-      packet->skew) ? &this->skew_max_tree : &this->skew_min_tree;
-  (*tree)->root = _insert_skew_tree (*tree, packet);
+  g_print ("ADD PACKET SKEW CALLED WITH MAX TREE TOP %lu, SKEW TO ADD IS %lu\n",
+      GET_SKEW_TREE_TOP (this->skew_max_tree), skew);
+  if (GET_SKEW_TREE_TOP (this->skew_max_tree) < skew)
+    _insert_skew_tree (this, this->skew_min_tree, skew, 1);
+  else
+    _insert_skew_tree (this, this->skew_max_tree, skew, 1);
 
   _balancing_skew_tree (this);
+
+}
+
+
+void
+_remove_skew (MpRTPRPath * this, guint64 skew)
+{
+  g_print ("REMOVE SKEW CALLED WITH %lu MAX TREE TOP IS %lu\n", skew,
+      GET_SKEW_TREE_TOP (this->skew_max_tree));
+  if (GET_SKEW_TREE_TOP (this->skew_max_tree) < skew) {
+    _remove_skew_tree (this, this->skew_min_tree, skew, NULL);
+  } else {
+    _remove_skew_tree (this, this->skew_max_tree, skew, NULL);
+  }
+//
+//  g_print("MAX: %d MIN:%d pooled: %d\n",
+//          this->skew_max_tree->counter, this->skew_min_tree->counter,
+//          g_queue_get_length(this->skews_pool));
 
 }
 
@@ -657,7 +740,8 @@ _balancing_skew_tree (MpRTPRPath * this)
   gint min_tree_num;
   gint max_tree_num;
   gint diff;
-  MpRTPPacket *packet;
+  guint64 top;
+  guint ref_count;
 
 balancing:
   min_tree_num = GET_SKEW_TREE_NUM (this->skew_min_tree);
@@ -668,21 +752,13 @@ balancing:
     goto done;
   }
   if (diff < -1) {
-    packet = GET_SKEW_TREE_TOP (this->skew_min_tree);
-    this->skew_min_tree->root = _skew_tree_remove_top (this->skew_min_tree);
-
-    g_print
-        ("Balancing. From min to max packet: %p ->parent: %p ->left: %p ->right: %p\n",
-        packet, packet->parent, packet->left, packet->right);
-    this->skew_max_tree->root = _insert_skew_tree (this->skew_max_tree, packet);
+    top = this->skew_min_tree->top;
+    _remove_skew_tree (this, this->skew_min_tree, top, &ref_count);
+    _insert_skew_tree (this, this->skew_max_tree, top, ref_count);
   } else if (1 < diff) {
-    packet = GET_SKEW_TREE_TOP (this->skew_max_tree);
-    this->skew_max_tree->root = _skew_tree_remove_top (this->skew_max_tree);
-
-    g_print
-        ("Balancing. From max to min packet: %p ->parent: %p ->left: %p ->right: %p\n",
-        packet, packet->parent, packet->left, packet->right);
-    this->skew_min_tree->root = _insert_skew_tree (this->skew_min_tree, packet);
+    top = this->skew_max_tree->top;
+    _remove_skew_tree (this, this->skew_max_tree, top, &ref_count);
+    _insert_skew_tree (this, this->skew_min_tree, top, ref_count);
   }
   goto balancing;
 
@@ -691,108 +767,142 @@ done:
 }
 
 
-MpRTPPacket *
-_insert_skew_tree (SkewTree * tree, MpRTPPacket * packet)
+Skew *
+_insert_skew (MpRTPRPath * this,
+    Skew * node, gint (*cmp) (guint64, guint64), guint64 value, guint ref_count)
 {
-  MpRTPPacket *node, *parent = NULL;
-  g_print ("BEFORE INSERTING %p: \n", packet);
-  _print_tree (tree, tree->root, 0);
-  if (!tree->root) {
-    g_print ("There is no root\n");
-    tree->root = tree->top = packet;
-    packet->parent = packet->left = packet->right = NULL;
-    goto done;
-  }
-  node = tree->root;
-  while (node) {
-    parent = node;
-    node = tree->cmp (parent, packet) < 0 ? node->right : node->left;
-  }
-  g_print ("The parent element is: %p ->left: %p ->right:%p\n",
-      parent, parent->left, parent->right);
-  if (tree->cmp (parent, packet) < 0) {
-    parent->right = packet;
-    if (tree->cmp (tree->top, packet) < 0) {
-      tree->top = packet;
-      g_print ("NEW TOP IS SELECTED AT INSERT: %p\n", tree->top);
-    }
-  } else {
-    parent->left = packet;
-  }
-  packet->parent = parent;
-  g_print ("After done the packet %p ->parent: %p ->left: %p ->right :%p\n",
-      packet, packet->parent, packet->left, packet->right);
-done:
-  packet->tree = tree;
-  ++tree->counter;
-  g_print ("AFTER INSERTING %p: \n", packet);
-  _print_tree (tree, tree->root, 0);
-  return tree->root;
+  gint cmp_result;
+  if (!node)
+    return _make_skew (this, value, ref_count);
+  cmp_result = cmp (node->value, value);
+  if (!cmp_result) {
+    g_print ("DUPLICATED: %lu", value);
+    return ++node->ref, node;
+  } else if (cmp_result < 0)
+    node->right = _insert_skew (this, node->right, cmp, value, ref_count);
+  else
+    node->left = _insert_skew (this, node->left, cmp, value, ref_count);
+  return node;
 }
 
-MpRTPPacket *
-_remove_skew_tree (SkewTree * tree, MpRTPPacket * packet)
+void
+_insert_skew_tree (MpRTPRPath * this, SkewTree * tree,
+    guint64 value, guint ref_count)
 {
-  MpRTPPacket *parent = NULL;
-  MpRTPPacket *candidate = NULL;
-  g_print ("BEFORE REMOVING %p: \n", packet);
-  _print_tree (tree, tree->root, 0);
-  if (!packet->left && !packet->right) {
-    candidate = NULL;
-    goto done;
-  }
-  if (!packet->left) {
-    candidate = packet->right;
-    goto done;
-  } else if (!packet->right) {
-    candidate = packet->left;
-    goto done;
-  }
-  for (candidate = packet->left; candidate->right;
-      candidate = candidate->right);
-  _remove_skew_tree (tree, candidate);
+  tree->root = _insert_skew (this, tree->root, tree->cmp, value, ref_count);
+  if (++tree->counter == 1)
+    tree->top = value;
+  if (tree->cmp (tree->top, value) < 0)
+    tree->top = value;
 
-done:
-  if (packet == tree->top) {
-    MpRTPPacket *right;
-    g_print ("%p TOP:%p ->parent:%p, left:%p\n",
-        tree, packet, packet->parent, packet->left);
-    if (packet->left) {
-      tree->top = packet->left;
-      for (right = packet->left->right; right;
-          tree->top = right, right = right->right);
-    } else {
-      tree->top = packet->parent;
-    }
-    g_print ("NEW TOP IS SELECTED AT REMOVE: %p\n", tree->top);
-//    g_print("%p removing operation NEW top: %lu\n", tree, tree->top->skew);
-  }
-  if (candidate)
-    candidate->parent = packet->parent;
-  if (packet->left)
-    packet->left->parent = candidate;
-  if (packet->right)
-    packet->right->parent = candidate;
-  if (!packet->parent) {
-    tree->root = candidate;
-  } else {
-    parent = packet->parent;
-    if (parent->left == packet)
-      parent->left = candidate;
-    else
-      parent->right = candidate;
-  }
-  packet->tree = NULL;
-  packet->left = packet->right = packet->parent = NULL;
-  --tree->counter;
-  g_print ("AFTER REMOVING %p: \n", packet);
-  _print_tree (tree, tree->root, 0);
-  return tree->root;
+  g_print ("INSERT %s CALLED FOR %lu, TOP is %lu\n",
+      tree->name, value, tree->top);
+//  _print_tree(tree, tree->root, 0);
+}
+
+static Skew *
+_get_removal_candidate (Skew * node)
+{
+  Skew *result;
+  for (result = node->right; result->left; result = result->left);
+  return result;
 }
 
 
 void
-_make_gap (MpRTPRPath * this, MpRTPPacket * at, guint16 start, guint16 end)
+_remove_skew_value_from_tree (MpRTPRPath * this, SkewTree * tree,
+    guint64 value, guint * ref_count)
+{
+  Skew *parent = NULL, *node, *next = NULL, *candidate;
+  gint cmp;
+  guint64 replace_value;
+  guint replace_ref;
+  GST_DEBUG_OBJECT (this, "REMOVE SKEW_VALUE_FROM_TREE %s CALLED WITH %lu\n",
+      tree->name, value);
+  for (node = tree->root; node; parent = node, node = next) {
+    cmp = tree->cmp (node->value, value);
+    GST_DEBUG_OBJECT (this, "CMP: node->value: %lu - value: %lu => %d\n",
+        node->value, value, cmp);
+    if (!cmp)
+      break;
+    next = cmp < 0 ? node->right : node->left;
+  }
+  if (!node) {
+    goto not_found;
+  } else if (ref_count) {
+    *ref_count = node->ref;
+  } else if (node->ref > 1) {
+    goto survive;
+  }
+
+  if (!node->left && !node->right) {
+    candidate = NULL;
+    goto remove;
+  } else if (!node->left) {
+    candidate = node->right;
+    goto remove;
+  } else if (!node->right) {
+    candidate = node->left;
+    goto remove;
+  } else {
+    candidate = _get_removal_candidate (node);
+    goto replace;
+  }
+
+survive:
+  GST_DEBUG_OBJECT (this, "%lu SURVIVE in %p\n", value, tree);
+  --node->ref;
+  return;
+not_found:
+  GST_DEBUG_OBJECT (this, "%lu NOT FOUND in %p\n", value, tree);
+  return;
+remove:
+  GST_DEBUG_OBJECT (this, "ELEMENT FOUND TO REMOVE: %lu\n", value);
+  if (!parent)
+    tree->root = candidate;
+  else if (parent->left == node)
+    parent->left = candidate;
+  else
+    parent->right = candidate;
+  _trash_skew (this, node);
+  --tree->counter;
+  return;
+replace:
+  GST_DEBUG_OBJECT (this, "ELEMENT FOUND TO REPLACE: %lu->%lu\n", value,
+      candidate->value);
+  _print_tree (tree, tree->root, 0);
+  replace_value = candidate->value;
+  _remove_skew_value_from_tree (this, tree, candidate->value, &replace_ref);
+  node->value = replace_value;
+  node->ref = replace_ref;
+  return;
+
+}
+
+guint64
+_get_new_top_skew (Skew * node)
+{
+  Skew *rightest;
+  if (!node)
+    return 0;
+  for (rightest = node; rightest->right; rightest = rightest->right);
+  return rightest->value;
+}
+
+void
+_remove_skew_tree (MpRTPRPath * this,
+    SkewTree * tree, guint64 value, guint * ref_count)
+{
+  GST_DEBUG_OBJECT (this, "REMOVE SKEW FROM %s CALLED WITH %lu\n", tree->name,
+      value);
+  _remove_skew_value_from_tree (this, tree, value, ref_count);
+  if (tree->top == value)
+    tree->top = _get_new_top_skew (tree->root);
+}
+
+
+void
+_make_gap (MpRTPRPath * this, Packet * at, guint16 start, guint16 end)
 {
   Gap *gap;
   guint16 counter;
@@ -823,15 +933,48 @@ _trash_gap (MpRTPRPath * this, Gap * gap)
 }
 
 
+Skew *
+_make_skew (MpRTPRPath * this, guint64 skew, guint ref_count)
+{
+  Skew *result;
+  //if (g_queue_is_empty (this->skews_pool)){
+  if (gst_queue_array_is_empty (this->skews_pool)) {
+    result = g_malloc0 (sizeof (Skew));
+//    g_print("Created - ");
+  } else {
+    result = (Skew *) gst_queue_array_pop_head (this->skews_pool);
+//      g_print("Pooled - ");
+    //result = (Skew *) g_queue_pop_head (this->skews_pool);
+//    g_print("pooled: %d\n", g_queue_get_length(this->skews_pool));
+  }
+  result->right = result->left = NULL;
+  result->value = skew;
+  result->ref = ref_count;
+  return result;
+}
+
+void
+_trash_skew (MpRTPRPath * this, Skew * skew)
+{
+  if (gst_queue_array_get_length (this->skews_pool) > 1024) {
+//      g_print("Freed - ");
+    g_free (skew);
+  } else {
+    gst_queue_array_push_tail (this->skews_pool, skew);
+    GST_DEBUG_OBJECT (this, "Trashed:%lu\n", skew->value);
+  }
+}
+
+
 gboolean
-_try_fill_a_gap (MpRTPRPath * this, MpRTPPacket * packet)
+_try_fill_a_gap (MpRTPRPath * this, Packet * packet)
 {
   gboolean result;
   GList *it;
   Gap *gap;
   gint cmp;
-  MpRTPPacket *pred;
-  MpRTPPacket *succ;
+  Packet *pred;
+  Packet *succ;
 
   result = FALSE;
   for (it = this->gaps; it; it = it->next, gap = NULL) {
@@ -891,20 +1034,19 @@ _cmp_seq (guint16 x, guint16 y)
 }
 
 gint
-_cmp_for_max (MpRTPPacket * x, MpRTPPacket * y)
+_cmp_for_max (guint64 x, guint64 y)
 {
-  return x->skew == y->skew ? 0 : x->skew < y->skew ? -1 : 1;
+  return x == y ? 0 : x < y ? -1 : 1;
 }
 
 gint
-_cmp_for_min (MpRTPPacket * x, MpRTPPacket * y)
+_cmp_for_min (guint64 x, guint64 y)
 {
-  return x->skew == y->skew ? 0 : x->skew < y->skew ? 1 : -1;
+  return x == y ? 0 : x < y ? 1 : -1;
 }
 
 #undef GET_SKEW_TREE_TOP
 #undef GET_SKEW_TREE_NUM
-#undef _skew_tree_remove_top
 
 #undef THIS_READLOCK
 #undef THIS_READUNLOCK

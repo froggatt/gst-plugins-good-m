@@ -394,7 +394,7 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
 
   g_object_set (mprtpsch, "join-subflow", 1, NULL);
   g_object_set (mprtpsch, "join-subflow", 2, NULL);
-  g_object_set (mprtprcv, "report-only", TRUE, NULL);
+  //g_object_set (mprtprcv, "report-only", TRUE, NULL);
 
 
   padName = g_strdup_printf ("send_rtcp_src_%u", session->sessionNum);
@@ -408,7 +408,7 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
 
   padName = g_strdup_printf ("recv_rtcp_sink_%u", session->sessionNum);
   gst_element_link_pads (rtpSrc_1, "src", mprtprcv, "sink_1");
-  gst_element_link_pads (rtpSrc_2, "src", mprtprcv, "sink_2");
+//  gst_element_link_pads (rtpSrc_2, "src", mprtprcv, "sink_2");
   //gst_element_link_pads(mprtprecv, "rtcp_src", rtpBin, padName);
   gst_element_link_pads (mprtprcv, "mprtcp_rr_src", mprtpsch, "mprtcp_rr_sink");
   gst_element_link_pads (mprtpsch, "mprtcp_sr_src", mprtpsnd, "mprtcp_sr_sink");

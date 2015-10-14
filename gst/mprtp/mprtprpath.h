@@ -11,6 +11,7 @@
 #include <gst/gst.h>
 #include <gst/rtp/gstrtpbuffer.h>
 #include <gst/rtp/gstrtcpbuffer.h>
+#include <gst/base/gstqueuearray.h>
 #include "gstmprtcpbuffer.h"
 
 G_BEGIN_DECLS
@@ -20,7 +21,7 @@ typedef struct _MpRTPReceiverPathClass MpRTPRPathClass;
 typedef struct _MpRTPRReceivedItem  MpRTPRReceivedItem;
 typedef struct _SkewTree SkewTree;
 typedef struct _SkewChain PacketChain;
-typedef struct _MpRTPPacket MpRTPPacket;
+
 
 #define MPRTPR_PATH_TYPE             (mprtpr_path_get_type())
 #define MPRTPR_PATH(src)             (G_TYPE_CHECK_INSTANCE_CAST((src),MPRTPR_PATH_TYPE,MPRTPRPath))
@@ -65,7 +66,10 @@ struct _MpRTPReceiverPath
   SkewTree*     skew_min_tree;
   PacketChain*  packet_chain;
   GQueue*       packets_pool;
+  GstQueueArray*       skews_pool;
   GQueue*       gaps_pool;
+  GstClockTime  last_median;
+
 
 };
 
