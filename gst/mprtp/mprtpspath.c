@@ -276,12 +276,44 @@ mprtps_path_is_non_congested (MPRTPSPath * this)
 
 }
 
+gboolean
+mprtps_path_is_in_trial (MPRTPSPath * this)
+{
+  gboolean result;
+  THIS_READLOCK (this);
+  result = (this->state & (guint8) MPRTPS_PATH_FLAG_TRIAL) ? TRUE : FALSE;
+  THIS_READUNLOCK (this);
+  return result;
+
+}
+
 void
 mprtps_path_set_congested (MPRTPSPath * this)
 {
   g_return_if_fail (this);
   THIS_WRITELOCK (this);
   this->state &= (guint8) 255 ^ (guint8) MPRTPS_PATH_FLAG_NON_CONGESTED;
+  this->sent_congested = gst_clock_get_time (this->sysclock);
+  THIS_WRITEUNLOCK (this);
+}
+
+
+void
+mprtps_path_set_trial_begin (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state |= (guint8) MPRTPS_PATH_FLAG_TRIAL;
+  this->sent_congested = gst_clock_get_time (this->sysclock);
+  THIS_WRITEUNLOCK (this);
+}
+
+void
+mprtps_path_set_trial_end (MPRTPSPath * this)
+{
+  g_return_if_fail (this);
+  THIS_WRITELOCK (this);
+  this->state &= (guint8) 255 ^ (guint8) MPRTPS_PATH_FLAG_TRIAL;
   this->sent_congested = gst_clock_get_time (this->sysclock);
   THIS_WRITEUNLOCK (this);
 }
@@ -311,7 +343,7 @@ mprtps_path_get_id (MPRTPSPath * this)
 
 
 guint32
-mprtps_path_get_total_sent_packet_num (MPRTPSPath * this)
+mprtps_path_get_total_sent_packets_num (MPRTPSPath * this)
 {
   guint32 result;
   THIS_READLOCK (this);

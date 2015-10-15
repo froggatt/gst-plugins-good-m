@@ -16,6 +16,7 @@
 
 typedef struct _SndEventBasedController SndEventBasedController;
 typedef struct _SndEventBasedControllerClass SndEventBasedControllerClass;
+typedef struct _ControllerRecord ControllerRecord;
 
 #define SEFCTRLER_TYPE             (sefctrler_get_type())
 #define SEFCTRLER(src)             (G_TYPE_CHECK_INSTANCE_CAST((src),SEFCTRLER_TYPE,SndEventBasedController))
@@ -36,9 +37,12 @@ struct _SndEventBasedController
   StreamSplitter*   splitter;
   GstClock*         sysclock;
   guint             subflow_num;
-  gfloat            goodput_nc_sum;
-  gfloat            goodput_c_sum;
-  gfloat            goodput_mc_sum;
+  ControllerRecord* records;
+  gint              records_max;
+  gint              records_index;
+  guint64           changed_num;
+
+  gboolean          new_report_arrived;
   gboolean          bids_recalc_requested;
   gboolean          bids_commit_requested;
   guint32           ssrc;

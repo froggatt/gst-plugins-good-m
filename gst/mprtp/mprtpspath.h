@@ -43,9 +43,10 @@ struct _RTPAbsTimeExtension
 
 typedef enum
 {
-  MPRTPS_PATH_FLAG_NON_LOSSY = 1,
-  MPRTPS_PATH_FLAG_NON_CONGESTED = 2,
-  MPRTPS_PATH_FLAG_ACTIVE = 4,
+  MPRTPS_PATH_FLAG_TRIAL = 1,
+  MPRTPS_PATH_FLAG_NON_LOSSY = 2,
+  MPRTPS_PATH_FLAG_NON_CONGESTED = 4,
+  MPRTPS_PATH_FLAG_ACTIVE = 8,
 } MPRTPSubflowFlags;
 
 typedef enum{
@@ -97,6 +98,9 @@ MPRTPSPath *make_mprtps_path (guint8 id);
 
 gboolean mprtps_path_is_new (MPRTPSPath * this);
 void mprtps_path_set_not_new(MPRTPSPath * this);
+void mprtps_path_set_trial_end (MPRTPSPath * this);
+void mprtps_path_set_trial_begin (MPRTPSPath * this);
+gboolean mprtps_path_is_in_trial (MPRTPSPath * this);
 gboolean mprtps_path_is_active (MPRTPSPath * this);
 void mprtps_path_set_active (MPRTPSPath * this);
 void mprtps_path_set_passive (MPRTPSPath * this);
@@ -107,7 +111,7 @@ gboolean mprtps_path_is_non_congested (MPRTPSPath * this);
 void mprtps_path_set_congested (MPRTPSPath * this);
 void mprtps_path_set_non_congested (MPRTPSPath * this);
 guint8 mprtps_path_get_id (MPRTPSPath * this);
-guint32 mprtps_path_get_total_sent_packet_num (MPRTPSPath * this);
+guint32 mprtps_path_get_total_sent_packets_num (MPRTPSPath * this);
 void mprtps_path_process_rtp_packet (MPRTPSPath * this, guint ext_header_id, GstRTPBuffer * rtp);
 guint32 mprtps_path_get_total_sent_payload_bytes (MPRTPSPath * this);
 

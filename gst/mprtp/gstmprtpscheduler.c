@@ -572,7 +572,7 @@ _collect_infos (GstMprtpscheduler * this)
     g_free (field_name);
 
     field_name = g_strdup_printf ("subflow-%d-sent_packet_num", index);
-    g_value_set_uint (&g_value, mprtps_path_get_total_sent_packet_num (path));
+    g_value_set_uint (&g_value, mprtps_path_get_total_sent_packets_num (path));
     gst_structure_set_value (result, field_name, &g_value);
     g_free (field_name);
 
