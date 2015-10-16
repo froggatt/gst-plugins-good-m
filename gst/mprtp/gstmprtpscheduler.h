@@ -81,6 +81,8 @@ struct _GstMprtpscheduler
   void (*controller_rem_path) (gpointer, guint8);
   void (*mprtcp_receiver) (gpointer, GstBuffer *);
   void (*riport_can_flow) (gpointer);
+  void (*controller_pacing) (gpointer,gboolean);
+
   guint32 rtcp_sent_octet_sum;
 
 

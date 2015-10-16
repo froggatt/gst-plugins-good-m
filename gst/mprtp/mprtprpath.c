@@ -55,7 +55,7 @@ struct _SkewTree
 
 struct _SkewChain
 {
-  Packet *head, *tail, *play;
+  Packet *head, *tail, *play, *tree;
   gint counter;
 };
 
@@ -606,6 +606,8 @@ _add_packet (MpRTPRPath * this, Packet * packet)
   GST_DEBUG_OBJECT (this, "ADD PACKET CALLED WITH SKEW %lu\n", packet->skew);
   if (!chain->play)
     chain->play = packet;
+  if (!chain->tree)
+    chain->tree = packet;
 
   if (++chain->counter < 3) {
     GST_DEBUG_OBJECT (this, "CHAIN COUNTER SMALLER THAN 3\n");
@@ -618,7 +620,15 @@ _add_packet (MpRTPRPath * this, Packet * packet)
   }
   //calculate everything
   _add_packet_skew (this, packet->skew);
-
+  if (GET_SKEW_TREE_NUM (this->skew_max_tree) +
+      GET_SKEW_TREE_NUM (this->skew_min_tree) > 256) {
+    Packet *actual;
+    actual = chain->tree;
+    if (actual->skew)
+      _remove_skew (this, actual->skew);
+    actual->skew = 0;
+    chain->tree = actual->next;
+  }
 
 done:
   //++chain->counter;

@@ -199,7 +199,6 @@ refctrler_run (void *data)
       report_length += 12 /*MPRTCP REPOR HEADER */  +
           (28 << 3) /*UDP Header overhead */ ;
 
-
       this->send_mprtcp_packet_func (this->send_mprtcp_packet_data, block);
 
 
@@ -466,6 +465,7 @@ _get_mprtcp_rr_block (RcvEventBasedController * this, Subflow * subflow,
   if (buf_length) {
     *buf_length = length;
   }
+  //gst_print_mprtcp_block(&block, NULL);
   //gst_print_rtcp_rr(rr);
   return buf;
 }

@@ -134,6 +134,7 @@ enum
   PROP_SUBFLOWS_STATS,
   PROP_RETAIN_MAX_TIME_IN_MS,
   PROP_SET_MAX_BYTES_PER_MS,
+  PROP_PACING_BUFFERS,
 };
 
 /* pad templates */
@@ -289,9 +290,17 @@ gst_mprtpscheduler_class_init (GstMprtpschedulerClass * klass)
           "A 32bit unsigned integer for setup the value. The first 8 bit identifies the subflow, the latter the maximum allowed bytes per ms for the subflow",
           0, 4294967295, 0, G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_PACING_BUFFERS,
+      g_param_spec_boolean ("pacing",
+          "Indicate weather the scheduler pacing the traffic or not",
+          "Indicate weather the scheduler pacing the traffic or not if"
+          "suflows overuse the paths regarding to the goodputs",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
 
   g_object_class_install_property (gobject_class, PROP_RETAIN_MAX_TIME_IN_MS,
       g_param_spec_uint ("retain-max-time",
+          "WE DON'T CARE DIFFERENT TYPE OF QUEES HERE, I SUFFERED ENOUGH WITH OTHER THINGS, SO THIS PROPERTY IS GOING TO BE OBSOLATED."
           "Set the maximum time in ms the scheduler can retain a buffer (default: 30ms)",
           "If the scheduler can retain buffers for pacing or "
           "temporary no active subflow reasons, here you can set the "
@@ -466,6 +475,12 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
       THIS_WRITELOCK (this);
       gboolean_value = g_value_get_boolean (value);
       this->retain_allowed = gboolean_value;
+      THIS_WRITEUNLOCK (this);
+      break;
+    case PROP_PACING_BUFFERS:
+      THIS_WRITELOCK (this);
+      gboolean_value = g_value_get_boolean (value);
+      this->controller_pacing (this->controller, gboolean_value);
       THIS_WRITEUNLOCK (this);
       break;
     case PROP_RETAIN_MAX_TIME_IN_MS:
@@ -1085,14 +1100,16 @@ _change_auto_flow_controlling_mode (GstMprtpscheduler * this,
         this, gst_mprtpscheduler_mprtcp_sender);
 
     sefctrler_set_callbacks (&this->riport_can_flow,
-        &this->controller_add_path, &this->controller_rem_path);
+        &this->controller_add_path,
+        &this->controller_rem_path, &this->controller_pacing);
   } else {
     this->controller = g_object_new (SMANCTRLER_TYPE, NULL);
     this->mprtcp_receiver = smanctrler_setup_mprtcp_exchange (this->controller,
         this, gst_mprtpscheduler_mprtcp_sender);
 
     smanctrler_set_callbacks (&this->riport_can_flow,
-        &this->controller_add_path, &this->controller_rem_path);
+        &this->controller_add_path,
+        &this->controller_rem_path, &this->controller_pacing);
   }
   this->riport_flow_signal_sent = FALSE;
   g_hash_table_iter_init (&iter, this->paths);

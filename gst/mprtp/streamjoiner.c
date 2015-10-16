@@ -197,6 +197,7 @@ stream_joiner_run (void *data)
   while (this->packets_heap->count) {
     heap_item = heap_front (this->packets_heap);
     _heap_pop (this->packets_heap);
+    g_print ("%hu->", heap_item->seq_num);
     this->send_mprtp_packet_func (this->send_mprtp_packet_data,
         heap_item->buffer);
     _trash_heap_item (this, heap_item);

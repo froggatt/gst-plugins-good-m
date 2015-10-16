@@ -739,7 +739,6 @@ gst_mprtpplayouter_mprtcp_sr_sink_chain (GstPad * pad, GstObject * parent,
 {
   GstMprtpplayouter *this;
   GstMapInfo info;
-  guint8 *data;
   GstFlowReturn result;
 
   this = GST_MPRTPPLAYOUTER (parent);
@@ -750,16 +749,10 @@ gst_mprtpplayouter_mprtcp_sr_sink_chain (GstPad * pad, GstObject * parent,
     result = GST_FLOW_ERROR;
     goto done;
   }
-  data = info.data + 1;
 
   result = _processing_mprtcp_packet (this, buf);
 
   gst_buffer_unmap (buf, &info);
-  if (*data != MPRTCP_PACKET_TYPE_IDENTIFIER) {
-    GST_WARNING_OBJECT (this, "mprtcp_sr_sink process only MPRTCP packets");
-    result = GST_FLOW_OK;
-    goto done;
-  }
 
   if (!this->riport_flow_signal_sent) {
     this->riport_flow_signal_sent = TRUE;

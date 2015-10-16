@@ -751,11 +751,11 @@ _assemble_report (Subflow * this, GstBuffer * blocks)
     }
   }
   gst_buffer_unmap (blocks, &map);
-
   result = gst_buffer_append (result, blocks);
   gst_buffer_map (result, &map, GST_MAP_WRITE);
   gst_rtcp_header_change ((GstRTCPHeader *) map.data, NULL, NULL, &src,
       NULL, NULL, NULL);
+
   gst_buffer_unmap (result, &map);
 exit:
   return result;

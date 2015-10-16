@@ -579,7 +579,7 @@ _send_mprtcp_buffer (GstMprtpreceiver * this, GstBuffer * buf)
   GstPad *outpad;
   GstRTCPBuffer rtcp = { NULL, };
   GstRTCPHeader *block_header;
-  GstMPRTCPSubflowReport *riport;
+  GstMPRTCPSubflowReport *report;
   GstMPRTCPSubflowBlock *block;
   GstMPRTCPSubflowInfo *info;
   guint8 info_type;
@@ -594,9 +594,9 @@ _send_mprtcp_buffer (GstMprtpreceiver * this, GstBuffer * buf)
     return result;
   }
 
-  riport = (GstMPRTCPSubflowReport *) gst_rtcp_get_first_header (&rtcp);
-  for (block = gst_mprtcp_get_first_block (riport);
-      block != NULL; block = gst_mprtcp_get_next_block (riport, block)) {
+  report = (GstMPRTCPSubflowReport *) gst_rtcp_get_first_header (&rtcp);
+  for (block = gst_mprtcp_get_first_block (report);
+      block != NULL; block = gst_mprtcp_get_next_block (report, block)) {
     info = &block->info;
     gst_mprtcp_block_getdown (info, &info_type, &block_length, NULL);
     if (info_type != 0) {

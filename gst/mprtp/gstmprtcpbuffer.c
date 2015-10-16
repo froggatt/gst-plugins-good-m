@@ -761,7 +761,7 @@ gst_print_mprtcp (GstMPRTCPSubflowReport * riport)
 {
   gint index;
   GstMPRTCPSubflowBlock *block = &riport->blocks;
-  GstMPRTCPSubflowInfo *info;
+
   GstRTCPHeader *riport_header = &riport->header;
   guint32 ssrc;
   guint8 src;
@@ -774,22 +774,38 @@ gst_print_mprtcp (GstMPRTCPSubflowReport * riport)
       "|%63u|\n", ssrc);
 
   for (index = 0; index < src; ++index) {
-    guint8 type, block_length;
-    guint16 subflow_id;
-    info = &block->info;
-    gst_mprtcp_block_getdown (info, &type, &block_length, &subflow_id);
-
-    g_print
-        ("+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+\n"
-        "|%15u|%15u|%31d|\n", type, block_length, subflow_id);
-
-    gst_print_rtcp (&block->block_header);
+    guint8 block_length;
+    gst_print_mprtcp_block (block, &block_length);
     block =
         (GstMPRTCPSubflowBlock *) ((guint8 *) block) + ((block_length +
             1) << 2);
   }
 }
 
+void
+gst_print_mprtcp_block (GstMPRTCPSubflowBlock * block, guint8 * block_length)
+{
+  guint8 type;
+  guint16 subflow_id;
+  GstMPRTCPSubflowInfo *info;
+  guint8 *_block_length = NULL, _substitue;
+
+  if (!block_length)
+    _block_length = &_substitue;
+  else
+    _block_length = block_length;
+
+
+  info = &block->info;
+  gst_mprtcp_block_getdown (info, &type, _block_length, &subflow_id);
+
+  g_print
+      ("+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+\n"
+      "|%15u|%15u|%31d|\n", type, *_block_length, subflow_id);
+
+  gst_print_rtcp (&block->block_header);
+
+}
 
 void
 gst_print_rtcp_header (GstRTCPHeader * header)

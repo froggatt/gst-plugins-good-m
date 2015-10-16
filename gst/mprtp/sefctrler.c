@@ -200,6 +200,7 @@ static gfloat _get_compensation (SndEventBasedController * this,
 static void sefctrler_rem_path (gpointer controller_ptr, guint8 subflow_id);
 static void sefctrler_add_path (gpointer controller_ptr, guint8 subflow_id,
     MPRTPSPath * path);
+static void sefctrler_pacing (gpointer controller_ptr, gboolean allowed);
 
 //----------------------------------------------------------------------
 //--------- Private functions implementations to SchTree object --------
@@ -247,7 +248,7 @@ sefctrler_init (SndEventBasedController * this)
       (ControllerRecord *) g_malloc0 (sizeof (ControllerRecord) *
       this->records_max);
   this->changed_num = 0;
-
+  this->pacing = FALSE;
   g_rw_lock_init (&this->rwmutex);
   g_rec_mutex_init (&this->thread_mutex);
   this->thread = gst_task_new (sefctrler_run, this, NULL);
@@ -378,9 +379,20 @@ exit:
 }
 
 void
+sefctrler_pacing (gpointer controller_ptr, gboolean allowed)
+{
+  SndEventBasedController *this;
+  this = SEFCTRLER (controller_ptr);
+  THIS_WRITELOCK (this);
+  this->pacing = allowed;
+  THIS_WRITEUNLOCK (this);
+}
+
+void
 sefctrler_set_callbacks (void (**riport_can_flow_indicator) (gpointer),
     void (**controller_add_path) (gpointer, guint8, MPRTPSPath *),
-    void (**controller_rem_path) (gpointer, guint8))
+    void (**controller_rem_path) (gpointer, guint8),
+    void (**controller_pacing) (gpointer, gboolean))
 {
   if (riport_can_flow_indicator) {
     *riport_can_flow_indicator = sefctrler_riport_can_flow;
@@ -390,6 +402,9 @@ sefctrler_set_callbacks (void (**riport_can_flow_indicator) (gpointer),
   }
   if (controller_rem_path) {
     *controller_rem_path = sefctrler_rem_path;
+  }
+  if (controller_pacing) {
+    *controller_pacing = sefctrler_pacing;
   }
 }
 
@@ -446,6 +461,7 @@ sefctrler_receive_mprtcp (gpointer ptr, GstBuffer * buf)
         "subflow with the given id: %d", subflow_id);
     goto done;
   }
+
   _report_processing_selector (subflow, block);
   this->new_report_arrived = TRUE;
   event = _check_state (subflow);
@@ -673,11 +689,11 @@ _riport_processing_rrblock_processor (Subflow * this, GstRTCPRRBlock * rrb)
 //  g_print("%d", this->id);
 //  gst_print_rtcp_rrb(rrb);
   //Debug print
-  g_print ("Receiver riport for subflow %d is processed\n"
-      "lost_rate: %f; "
-      "RTT (in ms): %lu\n",
-      this->id,
-      _st0 (this)->lost_rate, GST_TIME_AS_MSECONDS (_st0 (this)->RTT));
+//  g_print ("Receiver riport for subflow %d is processed\n"
+//      "lost_rate: %f; "
+//      "RTT (in ms): %lu\n",
+//      this->id,
+//      _st0 (this)->lost_rate, GST_TIME_AS_MSECONDS (_st0 (this)->RTT));
 
 }
 
@@ -874,6 +890,12 @@ _sefctrler_recalc (SndEventBasedController * this)
       stream_splitter_setup_sending_bid (this->splitter, subflow->id,
           (guint32) (sending_bid + .5));
 
+      if (this->pacing) {
+        guint32 bytes_per_ms;
+        bytes_per_ms = _st0 (subflow)->goodput / 1000. * 1.2;
+        mprtps_path_set_max_bytes_per_ms (subflow->path, bytes_per_ms);
+      }
+
     }
   }
 }
@@ -906,13 +928,18 @@ _get_compensation (SndEventBasedController * this, Subflow * subflow)
       subflow->id, this);
   if (!mprtps_path_is_in_trial (subflow->path))
     goto done;
-  if (_ct1 (this)->max_nc_goodput <= _st0 (subflow)->goodput) {
+  if (_ct0 (this)->subflows.nc > 1 &&
+      (_ct0 (this)->subflows.mc + _ct0 (this)->subflows.c) > 0 &&
+      _ct1 (this)->max_nc_goodput <= _st0 (subflow)->goodput) {
     mprtps_path_set_trial_end (subflow->path);
     goto done;
   }
-  if (!_ct0 (this)->subflows.nc) {      //aggressive increasement
+  if (_ct0 (this)->subflows.nc == 1 &&
+      (_ct0 (this)->subflows.mc + _ct0 (this)->subflows.c) > 0) {
+    //aggressive increasement
     result += .3;
-  } else {                      //cautious increasement
+  } else {
+    //cautious increasement
     result += .05;
   }
 done:
