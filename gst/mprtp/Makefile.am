@@ -28,8 +28,11 @@ noinst_HEADERS = mprtpspath.h      \
 
 # compiler and linker flags used to compile this plugin, set in configure.ac
 # libgstmprtp_la_CFLAGS = $(GST_CFLAGS) -I/usr/local/include/gstreamer-1.0 -I/home/balazs/gst/master/gst-plugins-base/gst-libs
-libgstmprtp_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) $(GST_CFLAGS)
-libgstmprtp_la_LIBADD = $(GST_LIBS) $(GST_BASE_LIBS) $(GST_PLUGINS_BASE_LIBS) -lgstrtp-1.0 
+libgstmprtp_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) \
+                        $(GST_CFLAGS)	$(GST_NET_CFLAGS) $(WARNING_CFLAGS) \
+                        $(ERROR_CFLAGS)
+libgstmprtp_la_LIBADD = $(GST_LIBS) $(GST_BASE_LIBS) $(GST_PLUGINS_BASE_LIBS) \
+            $(GST_NET_LIBS) -lgstrtp-@GST_API_VERSION@ \
+	        $(GST_BASE_LIBS) $(GST_LIBS_LIBS) 
 libgstmprtp_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS)
 libgstmprtp_la_LIBTOOLFLAGS = $(GST_PLUGIN_LIBTOOLFLAGS)
-

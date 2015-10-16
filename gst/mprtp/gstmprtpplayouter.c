@@ -34,6 +34,8 @@
 #include "config.h"
 #endif
 
+
+
 #include <gst/gst.h>
 #include <gst/gst.h>
 #include <string.h>
@@ -856,13 +858,14 @@ _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
     snd_time <<= 14;
     snd_time |= gst_clock_get_time (this->sysclock) & 0xffffffC000000000UL;
   }
-  g_print ("kibaszott meta");
+
+  //to avoid the check_collision problem in rtpsession.
   meta = gst_buffer_get_net_address_meta (buf);
   if (meta) {
     if (!this->pivot_address) {
       this->pivot_address_subflow_id = subflow_infos->id;
       this->pivot_address = G_SOCKET_ADDRESS (g_object_ref (meta->addr));
-    } else if (subflow_infos->id == this->pivot_address_subflow_id) {
+    } else if (subflow_infos->id != this->pivot_address_subflow_id) {
       g_object_unref (meta->addr);
       gst_buffer_add_net_address_meta (buf, this->pivot_address);
     }
