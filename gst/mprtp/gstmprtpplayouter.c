@@ -282,6 +282,9 @@ gst_mprtpplayouter_init (GstMprtpplayouter * this)
       gst_mprtpplayouter_send_mprtp_proxy);
   this->controller = NULL;
   _change_flow_riporting_mode (this, FALSE);
+
+  this->pivot_address_subflow_id = 0;
+  this->pivot_address = NULL;
   g_rw_lock_init (&this->rwmutex);
 }
 
@@ -608,6 +611,10 @@ _detach_path (GstMprtpplayouter * this, guint8 subflow_id)
   g_hash_table_remove (this->paths, GINT_TO_POINTER (subflow_id));
   stream_joiner_rem_path (this->joiner, subflow_id);
   this->controller_rem_path (this->controller, subflow_id);
+  if (this->pivot_address && subflow_id == this->pivot_address_subflow_id) {
+    g_object_unref (this->pivot_address);
+    this->pivot_address = NULL;
+  }
   if (--this->subflows_num) {
     this->subflows_num = 0;
   }
@@ -792,6 +799,7 @@ _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
   MPRTPSubflowHeaderExtension *subflow_infos = NULL;
   MpRTPRPath *path = NULL;
   guint size;
+  GstNetAddressMeta *meta;
   GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
   GstClockTime snd_time = 0;
 
@@ -847,6 +855,17 @@ _processing_mprtp_packet (GstMprtpplayouter * this, GstBuffer * buf)
     memcpy (&snd_time, pointer, 3);
     snd_time <<= 14;
     snd_time |= gst_clock_get_time (this->sysclock) & 0xffffffC000000000UL;
+  }
+  g_print ("kibaszott meta");
+  meta = gst_buffer_get_net_address_meta (buf);
+  if (meta) {
+    if (!this->pivot_address) {
+      this->pivot_address_subflow_id = subflow_infos->id;
+      this->pivot_address = G_SOCKET_ADDRESS (g_object_ref (meta->addr));
+    } else if (subflow_infos->id == this->pivot_address_subflow_id) {
+      g_object_unref (meta->addr);
+      gst_buffer_add_net_address_meta (buf, this->pivot_address);
+    }
   }
 
   mprtpr_path_process_rtp_packet (path, &rtp, subflow_infos->seq, snd_time);

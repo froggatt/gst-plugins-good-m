@@ -24,6 +24,28 @@
 #include "gstmprtcpbuffer.h"
 #include "streamjoiner.h"
 
+
+#include <gst/net/gstnetaddressmeta.h>
+
+#if GLIB_CHECK_VERSION (2, 35, 7)
+#include <gio/gnetworking.h>
+#else
+
+/* nicked from gnetworking.h */
+#ifdef G_OS_WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0501
+#endif
+#include <winsock2.h>
+#undef interface
+#include <ws2tcpip.h>           /* for socklen_t */
+#endif /* G_OS_WIN32 */
+
+#ifdef HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+#endif
+
 G_BEGIN_DECLS
 #define GST_TYPE_MPRTPPLAYOUTER   (gst_mprtpplayouter_get_type())
 #define GST_MPRTPPLAYOUTER(obj)   (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_MPRTPPLAYOUTER,GstMprtpplayouter))
@@ -45,6 +67,8 @@ struct _GstMprtpplayouter
   guint8 abs_time_ext_header_id;
   guint32 pivot_ssrc;
   guint32 pivot_clock_rate;
+  GSocketAddress *pivot_address;
+  guint8          pivot_address_subflow_id;
   guint64 clock_base;
   gboolean auto_flow_riporting;
   gboolean rtp_passthrough;
