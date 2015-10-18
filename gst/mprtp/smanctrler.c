@@ -42,6 +42,7 @@ static void smanctrler_riport_can_flow (gpointer this);
 static void smanctrler_add_path (gpointer controller_ptr, guint8 subflow_id,
     MPRTPSPath * path);
 static void smanctrler_rem_path (gpointer controller_ptr, guint8 subflow_id);
+static void smanctrler_pacing (gpointer controller_ptr, gboolean allowed);
 //----------------------------------------------------------------------
 //--------- Private functions implementations to SchTree object --------
 //----------------------------------------------------------------------
@@ -87,14 +88,24 @@ smanctrler_rem_path (gpointer controller_ptr, guint8 subflow_id)
 {
   SndManualController *this;
   this = SMANCTRLER (controller_ptr);
-  GST_DEBUG_OBJECT (this, "Receive Manual Controller add path is called"
+  GST_DEBUG_OBJECT (this, "Sending Manual Controller add path is called "
       "for detaching subflow %d", subflow_id);
+}
+
+void
+smanctrler_pacing (gpointer controller_ptr, gboolean allowed)
+{
+  SndManualController *this;
+  this = SMANCTRLER (controller_ptr);
+  GST_DEBUG_OBJECT (this, "Sending Manual Controller pacing is%s allowed ",
+      allowed ? " " : " NOT");
 }
 
 void
 smanctrler_set_callbacks (void (**riport_can_flow_indicator) (gpointer),
     void (**controller_add_path) (gpointer, guint8, MPRTPSPath *),
-    void (**controller_rem_path) (gpointer, guint8))
+    void (**controller_rem_path) (gpointer, guint8),
+    void (**controller_pacing) (gpointer, gboolean))
 {
   if (riport_can_flow_indicator) {
     *riport_can_flow_indicator = smanctrler_riport_can_flow;
@@ -104,6 +115,9 @@ smanctrler_set_callbacks (void (**riport_can_flow_indicator) (gpointer),
   }
   if (controller_rem_path) {
     *controller_rem_path = smanctrler_rem_path;
+  }
+  if (controller_pacing) {
+    *controller_pacing = smanctrler_pacing;
   }
 }
 

@@ -46,8 +46,9 @@ struct _SchNode
 {
   SchNode *left;
   SchNode *right;
-  SchNode *next;
+  //SchNode*     next;
   MPRTPSPath *path;
+  guint32 sent_bytes;
 };
 
 struct _Subflow
@@ -62,23 +63,48 @@ struct _Subflow
 //----------------------------------------------------------------------
 //Functions realted to stream_splitter
 static void stream_splitter_finalize (GObject * object);
-static void _full_tree_commit (StreamSplitter * this, guint32 bid_sum);
-static void _keyframes_tree_commit (StreamSplitter * this, guint32 bid_sum,
-    MPRTPSPathState filter);
+//static void _full_tree_commit (StreamSplitter * this, guint32 bid_sum);
+//static void _keyframes_tree_commit (StreamSplitter * this, guint32 bid_sum,
+//    MPRTPSPathState filter);
 
+static void
+_tree_commit (SchNode ** tree, GHashTable * subflows,
+    guint filter, guint32 bid_sum);
+static void _schnode_reduction (SchNode * node, guint reduction);
 //Functions related to tree
 static SchNode *_schnode_ctor (void);
 static void _schtree_insert (SchNode ** node,
     MPRTPSPath * path, gint * change, gint level_value);
 static void _schnode_rdtor (SchNode * node);
-static void _schnode_overlap_trees (SchNode * old_node, SchNode * new_node);
 //static void _print_tree (SchNode * root, gint top, gint level);
 //static MPRTPSPath* schtree_get_actual (SchNode * root);
-static MPRTPSPath *schtree_get_next (SchNode * root);
+static MPRTPSPath *schtree_get_next (SchNode * root, guint bytes_to_send);
 static void stream_splitter_run (void *data);
+//static void _print_tree_stat(SchNode *root);
 
 static Subflow *make_subflow (MPRTPSPath * path);
 
+
+static MPRTPSPath *_get_next_path (StreamSplitter * this, GstRTPBuffer * rtp);
+//static void _print_tree (SchNode * node, gint top, gint level);
+//void
+//_print_tree (SchNode * node, gint top, gint level)
+//{
+//  gint i;
+//  if (node == NULL) {
+//    return;
+//  }
+//  for (i = 0; i < level; ++i)
+//    g_print ("--");
+//  if (node->path != NULL) {
+//    g_print ("%d->%d:%d\n", top >> level, mprtps_path_get_id (node->path),
+//        node->sent_bytes);
+//  } else {
+//    g_print ("%d->C:%d\n", top >> level, node->sent_bytes);
+//  }
+//  _print_tree (node->left, top, level + 1);
+//  _print_tree (node->right, top, level + 1);
+//}
 
 //----------------------------------------------------------------------
 //---- Private function implementations to Stream Dealer object --------
@@ -94,7 +120,7 @@ stream_splitter_class_init (StreamSplitterClass * klass)
   gobject_class->finalize = stream_splitter_finalize;
 
   GST_DEBUG_CATEGORY_INIT (stream_splitter_debug_category, "stream_splitter", 0,
-      "Stream Dealer");
+      "Stream Splitter");
 
 }
 
@@ -105,6 +131,8 @@ stream_splitter_finalize (GObject * object)
   g_hash_table_destroy (this->subflows);
   gst_task_stop (this->thread);
   gst_task_join (this->thread);
+  gst_object_unref (this->thread);
+
   g_object_unref (this->sysclock);
 }
 
@@ -114,16 +142,21 @@ stream_splitter_init (StreamSplitter * this)
   this->new_path_added = FALSE;
   this->changes_are_committed = FALSE;
   this->path_is_removed = FALSE;
-  g_rw_lock_init (&this->rwmutex);
-  g_rec_mutex_init (&this->thread_mutex);
-  this->thread = gst_task_new (stream_splitter_run, this, NULL);
-  gst_task_set_lock (this->thread, &this->thread_mutex);
-  gst_task_start (this->thread);
-
   this->sysclock = gst_system_clock_obtain ();
+  this->active_subflow_num = 0;
   this->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   this->subflows = g_hash_table_new_full (NULL, NULL, NULL, g_free);
   this->charge_value = 1;
+  this->thread = gst_task_new (stream_splitter_run, this, NULL);
+
+
+  g_rw_lock_init (&this->rwmutex);
+  g_rec_mutex_init (&this->thread_mutex);
+
+  gst_task_set_lock (this->thread, &this->thread_mutex);
+  gst_task_start (this->thread);
+
+
 }
 
 void
@@ -144,6 +177,9 @@ stream_splitter_add_path (StreamSplitter * this, guint8 subflow_id,
   g_hash_table_insert (this->subflows, GINT_TO_POINTER (subflow_id),
       lookup_result);
   this->new_path_added = TRUE;
+  ++this->active_subflow_num;
+  GST_DEBUG ("Subflow is added, the actual number of subflow is: %d",
+      this->active_subflow_num);
 exit:
   THIS_WRITEUNLOCK (this);
 }
@@ -163,6 +199,9 @@ stream_splitter_rem_path (StreamSplitter * this, guint8 subflow_id)
   }
   g_hash_table_remove (this->subflows, GINT_TO_POINTER (subflow_id));
   this->path_is_removed = TRUE;
+  --this->active_subflow_num;
+  GST_DEBUG ("Subflow is removed, the actual number of subflow is: %d",
+      this->active_subflow_num);
 exit:
   THIS_WRITEUNLOCK (this);
 }
@@ -205,28 +244,71 @@ stream_splitter_commit_changes (StreamSplitter * this)
 }
 
 //Here the buffer must be writeable and must be rtp
-void
-stream_splitter_process_rtp_packet (StreamSplitter * this, GstRTPBuffer * rtp)
+//gboolean
+//stream_splitter_process_rtp_packet (StreamSplitter * this, GstRTPBuffer * rtp)
+//{
+//  MPRTPSPath *path;
+//  gboolean result = TRUE;
+//  guint32 bytes_to_send;
+//  guint32 keytree_value, non_keytree_value;
+//  SchNode *tree;
+//
+//  THIS_WRITELOCK (this);
+//  bytes_to_send = gst_rtp_buffer_get_payload_len(rtp);
+//  if(this->keyframes_tree == NULL){
+//    path = schtree_get_next (this->non_keyframes_tree, bytes_to_send);
+//    goto process;
+//  }else if(this->non_keyframes_tree == NULL){
+//    path = schtree_get_next (this->keyframes_tree, bytes_to_send);
+//    goto process;
+//  }
+//
+//  if (!GST_BUFFER_FLAG_IS_SET (rtp->buffer, GST_BUFFER_FLAG_DELTA_UNIT))
+//  {
+//    path = schtree_get_next (this->keyframes_tree, bytes_to_send);
+//    goto process;
+//  }
+//
+//  keytree_value = this->keyframes_tree->sent_bytes * this->non_keyframe_ratio;
+//  non_keytree_value = this->non_keyframes_tree->sent_bytes * this->keyframe_ratio;
+//  tree = keytree_value <= non_keytree_value ? this->keyframes_tree : this->non_keyframes_tree;
+//
+//  path = schtree_get_next (tree, bytes_to_send);
+//
+//
+//process:
+//  mprtps_path_process_rtp_packet (path, this->ext_header_id, rtp);
+//done:
+//  THIS_WRITEUNLOCK (this);
+//  return result;
+//}
+
+
+MPRTPSPath *
+stream_splitter_get_next_path (StreamSplitter * this, GstBuffer * buf)
 {
-  MPRTPSPath *path;
+  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
+  MPRTPSPath *path = NULL;
+
+  if (G_UNLIKELY (!gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp))) {
+    GST_WARNING_OBJECT (this, "The RTP packet is not writeable");
+    goto exit;
+  }
   THIS_WRITELOCK (this);
-  if (this->keyframes_tree == NULL || this->full_tree == NULL) {
+  if (this->keyframes_tree == NULL && this->non_keyframes_tree == NULL) {
     //vagy várni egy kis ideig....
-    GST_WARNING_OBJECT (this, "no appropiate tree exists for distributing");
+    GST_WARNING_OBJECT (this, "No active subflow");
     goto done;
   }
+  path = _get_next_path (this, &rtp);
 
-  if (!GST_BUFFER_FLAG_IS_SET (rtp->buffer, GST_BUFFER_FLAG_DELTA_UNIT)) {
-    //its a keyframe
-    path = schtree_get_next (this->keyframes_tree);
-  } else {
-    path = schtree_get_next (this->full_tree);
-  }
-
-  mprtps_path_process_rtp_packet (path, this->ext_header_id, rtp);
 done:
+  gst_rtp_buffer_unmap (&rtp);
   THIS_WRITEUNLOCK (this);
+exit:
+  return path;
 }
+
 
 void
 stream_splitter_run (void *data)
@@ -235,31 +317,22 @@ stream_splitter_run (void *data)
   GstClockTime now;
   GstClockID clock_id;
   GstClockTime next_scheduler_time;
+  GstClockTime interval;
   MPRTPSPathState path_state;
   gdouble rand;
   GHashTableIter iter;
   gpointer key, val;
   Subflow *subflow;
   MPRTPSPath *path;
-  guint32 bid_total_sum = 0, bid_nc_sum = 0, bid_l_sum = 0;
+  guint32 bid_total_sum = 0, bid_nc_sum = 0, bid_mc_sum = 0, bid_c_sum = 0;
 
   this = STREAM_SPLITTER (data);
   now = gst_clock_get_time (this->sysclock);
 
   THIS_WRITELOCK (this);
 
-
   if (!this->new_path_added &&
       !this->path_is_removed && !this->changes_are_committed) {
-    //debug printing
-    g_hash_table_iter_init (&iter, this->subflows);
-    while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
-      //subflow_id = *((guint8*) key);
-      subflow = (Subflow *) val;
-      path = subflow->path;
-      g_print ("%p,subflow %d,%d\n", this, mprtps_path_get_id (path),
-          mprtps_path_get_sent_packet_num (path));
-    }
     goto done;
   }
 
@@ -287,23 +360,73 @@ stream_splitter_run (void *data)
     path_state = mprtps_path_get_state (path);
     if (path_state == MPRTPS_PATH_STATE_NON_CONGESTED) {
       bid_nc_sum += subflow->actual_bid;
-    } else if (mprtps_path_is_non_congested (path)) {
-      bid_l_sum += subflow->actual_bid;
+    } else if (path_state == MPRTPS_PATH_STATE_MIDDLY_CONGESTED) {
+      bid_mc_sum += subflow->actual_bid;
+    } else if (path_state == MPRTPS_PATH_STATE_CONGESTED) {
+      bid_c_sum += subflow->actual_bid;
     }
-    //debug printing
-    g_print ("%p,subflow %d,%d\n", this, mprtps_path_get_id (path),
-        mprtps_path_get_sent_packet_num (path));
   }
 
-  _full_tree_commit (this, bid_total_sum);
   if (bid_nc_sum > 0) {
-    _keyframes_tree_commit (this, bid_nc_sum, MPRTPS_PATH_STATE_NON_CONGESTED);
-  } else if (bid_l_sum > 0) {
-    _keyframes_tree_commit (this, bid_nc_sum,
-        MPRTPS_PATH_STATE_MIDDLY_CONGESTED);
+    GST_DEBUG_OBJECT (this, "Non-congested paths exists, "
+        "the bid is: %d the total bid is: %d", bid_nc_sum, bid_total_sum);
+    _tree_commit (&this->keyframes_tree, this->subflows,
+        MPRTPS_PATH_STATE_NON_CONGESTED, bid_nc_sum);
+    if (bid_mc_sum > 0 || bid_c_sum > 0) {
+      GST_DEBUG_OBJECT (this, "Middly or congested paths exists, "
+          "the bid for mc is: %d, for c is: %d", bid_mc_sum, bid_c_sum);
+      _tree_commit (&this->non_keyframes_tree,
+          this->subflows,
+          MPRTPS_PATH_STATE_CONGESTED | MPRTPS_PATH_STATE_MIDDLY_CONGESTED,
+          bid_c_sum + bid_mc_sum);
+      this->non_keyframe_ratio = (bid_mc_sum + bid_c_sum) / bid_total_sum;
+      this->keyframe_ratio = 1. - this->non_keyframe_ratio;
+    } else {
+      GST_DEBUG_OBJECT (this, "Neither middly nor congested paths exists");
+      _schnode_rdtor (this->non_keyframes_tree);
+      this->non_keyframes_tree = NULL;
+      this->non_keyframe_ratio = 0.;
+      this->keyframe_ratio = 1.;
+    }
+  } else if (bid_mc_sum > 0) {
+    GST_DEBUG_OBJECT (this, "Middly-congested paths exists but "
+        "no non-congested available, "
+        "the bid is: %d the total bid is: %d", bid_mc_sum, bid_total_sum);
+    _tree_commit (&this->keyframes_tree, this->subflows,
+        MPRTPS_PATH_STATE_MIDDLY_CONGESTED, bid_mc_sum);
+    if (bid_c_sum > 0) {
+      GST_DEBUG_OBJECT (this, "Congested paths exists, the bid is: %d",
+          bid_c_sum);
+      _tree_commit (&this->non_keyframes_tree,
+          this->subflows, MPRTPS_PATH_STATE_CONGESTED, bid_c_sum);
+      this->non_keyframe_ratio = bid_c_sum / bid_total_sum;
+      this->keyframe_ratio = 1. - this->non_keyframe_ratio;
+    } else {
+      GST_DEBUG_OBJECT (this, "No congested paths exists");
+      _schnode_rdtor (this->non_keyframes_tree);
+      this->non_keyframes_tree = NULL;
+      this->non_keyframe_ratio = 0.;
+      this->keyframe_ratio = 1.;
+    }
+  } else if (bid_c_sum > 0) {
+    GST_DEBUG_OBJECT (this, "Only congested path exists the bid is: %d",
+        bid_c_sum);
+    _tree_commit (&this->non_keyframes_tree, this->subflows,
+        MPRTPS_PATH_STATE_CONGESTED, bid_c_sum);
+    _schnode_rdtor (this->keyframes_tree);
+    this->keyframes_tree = NULL;
+    this->non_keyframe_ratio = 1.;
+    this->keyframe_ratio = 0.;
   } else {
-    this->keyframes_tree = this->full_tree;
+    _schnode_rdtor (this->keyframes_tree);
+    this->keyframes_tree = NULL;
+    _schnode_rdtor (this->non_keyframes_tree);
+    this->non_keyframes_tree = NULL;
   }
+//  g_print ("NON_KEYFRAMES_TREE\n");
+//  _print_tree (this->non_keyframes_tree, 128, 0);
+//  g_print ("KEYFRAMES_TREE\n");
+//  _print_tree (this->keyframes_tree, 128, 0);
 //  g_print("full_tree:\n"); _print_tree(this->full_tree, SCHTREE_MAX_VALUE, 0);
 //  g_print("keyframes_tree:\n"); _print_tree(this->keyframes_tree, SCHTREE_MAX_VALUE, 0);
 
@@ -312,10 +435,17 @@ stream_splitter_run (void *data)
   this->changes_are_committed = FALSE;
 
 done:
-  rand = g_random_double ();
-  next_scheduler_time = now + GST_SECOND * (0.5 + rand);
-  GST_DEBUG_OBJECT (this, "Next scheduling interval time is %lu",
-      next_scheduler_time);
+  if (this->active_subflow_num > 0) {
+    rand = g_random_double ();
+    interval = GST_SECOND * (0.5 + rand);
+    next_scheduler_time = now + interval;
+
+    GST_DEBUG_OBJECT (this, "Next scheduling interval time is %lu",
+        GST_TIME_AS_MSECONDS (interval));
+
+  } else {
+    next_scheduler_time = now + GST_MSECOND * 10;
+  }
   clock_id = gst_clock_new_single_shot_id (this->sysclock, next_scheduler_time);
 
   THIS_WRITEUNLOCK (this);
@@ -326,33 +456,151 @@ done:
   gst_clock_id_unref (clock_id);
 }
 
-//tree functions
-static void
-_schtree_loadup (SchNode * node, MPRTPSPath * path)
-{
 
-  if (node == NULL || node->path != NULL) {
-    return;
+
+MPRTPSPath *
+_get_next_path (StreamSplitter * this, GstRTPBuffer * rtp)
+{
+  MPRTPSPath *result = NULL;
+  guint32 bytes_to_send;
+  guint32 keytree_value, non_keytree_value;
+  SchNode *tree;
+
+  bytes_to_send = gst_rtp_buffer_get_payload_len (rtp);
+  if (this->keyframes_tree == NULL) {
+    result = schtree_get_next (this->non_keyframes_tree, bytes_to_send);
+    goto done;
+  } else if (this->non_keyframes_tree == NULL) {
+    result = schtree_get_next (this->keyframes_tree, bytes_to_send);
+    goto done;
   }
+
+  if (!GST_BUFFER_FLAG_IS_SET (rtp->buffer, GST_BUFFER_FLAG_DELTA_UNIT)) {
+    result = schtree_get_next (this->keyframes_tree, bytes_to_send);
+    goto done;
+  }
+
+  keytree_value = this->keyframes_tree->sent_bytes * this->non_keyframe_ratio;
+  non_keytree_value =
+      this->non_keyframes_tree->sent_bytes * this->keyframe_ratio;
+  tree =
+      keytree_value <=
+      non_keytree_value ? this->keyframes_tree : this->non_keyframes_tree;
+
+  result = schtree_get_next (tree, bytes_to_send);
+
+done:
+  return result;
+}
+
+
+//tree functions
+static guint32
+_schtree_loadup (SchNode * node,
+    MPRTPSPath * max_bid_path, guint32 * min_sent_bytes, guint level)
+{
+  guint32 sent_bytes = 0;
+  if (node == NULL) {
+    return 0;
+  }
+
+  if (node->path != NULL) {
+    if (sent_bytes < *min_sent_bytes) {
+      *min_sent_bytes = sent_bytes;
+    }
+    node->sent_bytes =
+        mprtps_path_get_total_sent_payload_bytes (node->path) >> level;
+    return node->sent_bytes;
+  }
+
   if (node->left == NULL) {
     node->left = _schnode_ctor ();
-    node->left->path = path;
+    node->left->path = max_bid_path;
+    node->left->sent_bytes =
+        mprtps_path_get_total_sent_payload_bytes (max_bid_path) >> level;
+    g_warning ("Schtree is not full");
   } else {
-    _schtree_loadup (node->left, path);
+    sent_bytes += _schtree_loadup (node->left, max_bid_path,
+        min_sent_bytes, level + 1);
   }
 
   if (node->right == NULL) {
     node->right = _schnode_ctor ();
-    node->right->path = path;
+    node->right->path = max_bid_path;
+    node->left->sent_bytes =
+        mprtps_path_get_total_sent_payload_bytes (max_bid_path) >> level;
+    g_warning ("Schtree is not full");
   } else {
-    _schtree_loadup (node->right, path);
+    sent_bytes += _schtree_loadup (node->right, max_bid_path,
+        min_sent_bytes, level + 1);
   }
+
+  node->sent_bytes = sent_bytes;
+  return sent_bytes;
 }
 
+void
+_schnode_reduction (SchNode * node, guint reduction)
+{
+  if (node == NULL) {
+    return;
+  }
+  node->sent_bytes >>= reduction;
+  _schnode_reduction (node->left, reduction);
+  _schnode_reduction (node->right, reduction);
+}
 
+//
+//void _print_tree_stat(SchNode *root)
+//{
+//  SchNode *node;
+//  GQueue *queue;
+//  guint indent = 1,i;
+//  guint remain_at_level = 1, level = 0, missing=0;
+//  if(root == NULL){
+//      return;
+//  }
+//  node = root;
+//  queue = g_queue_new();
+//  g_queue_push_tail(queue, node);
+//  while(!g_queue_is_empty(queue)){
+//    if(remain_at_level == 0){
+//        ++level;
+//        indent+=indent;
+//        remain_at_level = (1<<level)-missing;
+//        missing = 0;
+//        g_print("\n");
+//    }
+//    node = (SchNode*) g_queue_pop_head(queue);
+//    for(i = 0; i < indent; ++i){
+//      g_print("-");
+//    }
+//
+//    if(node->path != NULL){
+//      g_print("%d:%d", mprtps_path_get_id(node->path), node->sent_bytes);
+//    }else{
+//      g_print("C:%d", node->sent_bytes);
+//    }
+//    --remain_at_level;
+//
+//    if(node->left == NULL){
+//        ++missing;
+//    }else{
+//        g_queue_push_tail(queue, node->left);
+//    }
+//
+//    if(node->right == NULL){
+//        ++missing;
+//    }else{
+//        g_queue_push_tail(queue, node->right);
+//    }
+//
+//  }
+//}
 
 void
-_full_tree_commit (StreamSplitter * this, guint32 bid_sum)
+_tree_commit (SchNode ** tree,
+    GHashTable * subflows, guint filter, guint32 bid_sum)
 {
   gdouble actual_value;
   gint insert_value;
@@ -362,55 +610,15 @@ _full_tree_commit (StreamSplitter * this, guint32 bid_sum)
   Subflow *subflow;
   gpointer val, key;
   GHashTableIter iter;
+  guint32 min_bytes_sent = 4294967295;
   //guint8 subflow_id;
 
-  g_hash_table_iter_init (&iter, this->subflows);
-  while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
-    //printf("key %u ---> %u\n", (guint8)*subflow_id, (MPRTPSPath*)*subflow);
-    //subflow_id = *((guint8*) key);
-    subflow = (Subflow *) val;
-    path = subflow->path;
-    if (largest_bid < subflow->actual_bid) {
-      largest_bid = subflow->actual_bid;
-      path_with_largest_bid = path;
-    }
-
-    actual_value =
-        (gdouble) subflow->actual_bid /
-        (gdouble) bid_sum *(gdouble) SCHTREE_MAX_VALUE;
-    insert_value = (gint) roundf (actual_value);
-    _schtree_insert (&new_root, path, &insert_value, SCHTREE_MAX_VALUE);
-  }
-
-
-  //check 128 integrity
-  _schnode_overlap_trees (this->full_tree, new_root);
-  _schnode_rdtor (this->full_tree);
-  this->full_tree = new_root;
-  _schtree_loadup (this->full_tree, path_with_largest_bid);
-}
-
-
-void
-_keyframes_tree_commit (StreamSplitter * this, guint32 bid_sum,
-    MPRTPSPathState filter)
-{
-  gdouble actual_value;
-  gint insert_value;
-  SchNode *new_root = NULL;
-  MPRTPSPath *path, *path_with_largest_bid = NULL;
-  guint32 largest_bid = 0;
-  Subflow *subflow;
-  gpointer val, key;
-  GHashTableIter iter;
-  //guint8 subflow_id;
-
-  g_hash_table_iter_init (&iter, this->subflows);
+  g_hash_table_iter_init (&iter, subflows);
   while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
     subflow = (Subflow *) val;
     path = subflow->path;
 
-    if (mprtps_path_get_state (path) != filter) {
+    if ((mprtps_path_get_state (path) & filter) == 0) {
       continue;
     }
     if (largest_bid < subflow->actual_bid) {
@@ -426,12 +634,14 @@ _keyframes_tree_commit (StreamSplitter * this, guint32 bid_sum,
 
 
   //check 128 integrity
-  _schnode_overlap_trees (this->keyframes_tree, new_root);
-  _schnode_rdtor (this->keyframes_tree);
-  this->keyframes_tree = new_root;
-  _schtree_loadup (this->keyframes_tree, path_with_largest_bid);
+  _schnode_rdtor (*tree);
+  *tree = new_root;
+  (*tree)->sent_bytes = _schtree_loadup (*tree,
+      path_with_largest_bid, &min_bytes_sent, 0);
+  if ((1 << 23) < min_bytes_sent) {
+    _schnode_reduction (*tree, 23);
+  }
 }
-
 
 
 void
@@ -444,23 +654,6 @@ _schnode_rdtor (SchNode * node)
   _schnode_rdtor (node->right);
   g_free (node);
 }
-
-void
-_schnode_overlap_trees (SchNode * old_node, SchNode * new_node)
-{
-  if (old_node == NULL || new_node == NULL) {
-    return;
-  }
-  if (old_node->path != NULL || new_node->path != NULL) {
-    return;
-  }
-  if (old_node->next == old_node->right) {
-    new_node->next = new_node->right;
-  }
-  _schnode_overlap_trees (old_node->left, new_node->left);
-  _schnode_overlap_trees (old_node->right, new_node->right);
-}
-
 
 void
 _schtree_insert (SchNode ** node, MPRTPSPath * path, gint * change,
@@ -491,25 +684,45 @@ _schnode_ctor (void)
   SchNode *result = (SchNode *) g_malloc0 (sizeof (SchNode));
   result->left = NULL;
   result->right = NULL;
-  result->next = NULL;
+//  result->next = NULL;
   result->path = NULL;
   return result;
 }
 
+
 MPRTPSPath *
-schtree_get_next (SchNode * root)
+schtree_get_next (SchNode * root, guint32 bytes_to_send)
 {
   MPRTPSPath *result;
-  SchNode *selected;
+  SchNode *selected, *left, *right;
+  root->sent_bytes += bytes_to_send;
   selected = root;
   while (selected->path == NULL) {
-    selected->next =
-        (selected->next == selected->left) ? selected->right : selected->left;
-    selected = selected->next;
+    left = selected->left;
+    right = selected->right;
+    selected = (left->sent_bytes <= right->sent_bytes) ? left : right;
+    selected->sent_bytes += bytes_to_send;
   }
   result = selected->path;
   return result;
 }
+
+//
+//
+//MPRTPSPath *
+//schtree_get_next (SchNode * root)
+//{
+//  MPRTPSPath *result;
+//  SchNode *selected;
+//  selected = root;
+//  while (selected->path == NULL) {
+//    selected->next =
+//        (selected->next == selected->left) ? selected->right : selected->left;
+//    selected = selected->next;
+//  }
+//  result = selected->path;
+//  return result;
+//}
 
 
 Subflow *

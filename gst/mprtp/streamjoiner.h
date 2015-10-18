@@ -14,6 +14,7 @@
 
 typedef struct _StreamJoiner StreamJoiner;
 typedef struct _StreamJoinerClass StreamJoinerClass;
+typedef struct _Heap Heap;
 
 #define STREAM_JOINER_TYPE             (stream_joiner_get_type())
 #define STREAM_JOINER(src)             (G_TYPE_CHECK_INSTANCE_CAST((src),STREAM_JOINER_TYPE,StreamJoiner))
@@ -22,8 +23,8 @@ typedef struct _StreamJoinerClass StreamJoinerClass;
 #define STREAM_JOINER_IS_SOURCE_CLASS(klass)  (G_TYPE_CHECK_CLASS_TYPE((klass),STREAM_JOINER_TYPE))
 #define STREAM_JOINER_CAST(src)        ((StreamJoiner *)(src))
 
-
 #define MPRTP_SENDER_SCHTREE_MAX_PATH_NUM 32
+
 
 struct _StreamJoiner
 {
@@ -35,17 +36,14 @@ struct _StreamJoiner
   GHashTable*       subflows;
   GRWLock           rwmutex;
 
-  gfloat            playout_delay;
-  guint             path_skew_counter;
-  guint64           path_skews[256];
-  gint              path_skew_index;
+  GstClockTime      playout_delay;
+  Heap*             packets_heap;
+  GQueue*           heap_items_pool;
 
   gint              subflow_num;
   GstClock*         sysclock;
   void            (*send_mprtp_packet_func)(gpointer,GstBuffer*);
   gpointer          send_mprtp_packet_data;
-
-
 };
 
 struct _StreamJoinerClass{
@@ -56,10 +54,12 @@ struct _StreamJoinerClass{
 void stream_joiner_set_sending(StreamJoiner* this, gpointer data, void (*func)(gpointer,GstBuffer*));
 
 void
-stream_joiner_add_path(StreamJoiner * this, guint8 subflow_id, MPRTPRPath *path);
+stream_joiner_add_path(StreamJoiner * this, guint8 subflow_id, MpRTPRPath *path);
 
 void
 stream_joiner_rem_path(StreamJoiner * this, guint8 subflow_id);
+
+void stream_joiner_set_playout_delay(StreamJoiner *this, GstClockTime delay);
 
 GType stream_joiner_get_type (void);
 

@@ -23,29 +23,31 @@
 #include <gst/gst.h>
 
 G_BEGIN_DECLS
-
 #define GST_TYPE_MPRTPSENDER   (gst_mprtpsender_get_type())
 #define GST_MPRTPSENDER(obj)   (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_MPRTPSENDER,GstMprtpsender))
 #define GST_MPRTPSENDER_CLASS(klass)   (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_MPRTPSENDER,GstMprtpsenderClass))
 #define GST_IS_MPRTPSENDER(obj)   (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_MPRTPSENDER))
 #define GST_IS_MPRTPSENDER_CLASS(obj)   (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_MPRTPSENDER))
-
 typedef struct _GstMprtpsender GstMprtpsender;
 typedef struct _GstMprtpsenderClass GstMprtpsenderClass;
 typedef struct _GstMprtpsenderPrivate GstMprtpsenderPrivate;
 
 struct _GstMprtpsender
 {
-  GstElement     base_mprtpsender;
-  GRWLock        rwmutex;
-  guint8         ext_header_id;
-  GList*         subflows;
-  GstPad*        mprtcp_rr_sinkpad;
-  GstPad*        mprtp_sinkpad;
-  GstPad*        mprtcp_sr_sinkpad;
-  GstPad*        pivot_outpad;
+  GstElement base_mprtpsender;
+  GRWLock rwmutex;
+  guint8 mprtp_ext_header_id;
+  GList *subflows;
+  GstPad *mprtcp_rr_sinkpad;
+  GstPad *mprtp_sinkpad;
+  GstPad *mprtcp_sr_sinkpad;
+  GstPad *pivot_outpad;
 
-  GstMprtpsenderPrivate* priv;
+  GstEvent *event_stream_start;
+  GstEvent *event_segment;
+  GstEvent *event_caps;
+
+  GstMprtpsenderPrivate *priv;
 };
 
 struct _GstMprtpsenderClass
@@ -56,5 +58,4 @@ struct _GstMprtpsenderClass
 GType gst_mprtpsender_get_type (void);
 
 G_END_DECLS
-
 #endif //_GST_MPRTPSENDER_H_

@@ -34,10 +34,12 @@
 #include "config.h"
 #endif
 
+#include <stdlib.h>
 #include <string.h>
 #include <gst/gst.h>
 #include <gst/rtp/gstrtcpbuffer.h>
 #include "gstmprtcpbuffer.h"
+
 
 #define RTCPHEADER_BYTES 8
 #define RTCPHEADER_WORDS (RTCPHEADER_BYTES>>2)
@@ -170,16 +172,16 @@ gst_rtcp_add_end (GstRTCPBuffer * rtcp, GstRTCPHeader * header)
   rtcp->map.size += length;
 }
 
-GstMPRTCPSubflowRiport *
+GstMPRTCPSubflowReport *
 gst_mprtcp_add_riport (GstRTCPHeader * header)
 {
-  GstMPRTCPSubflowRiport *result = (GstMPRTCPSubflowRiport *) header;
-  gst_mprtcp_riport_init (result);
+  GstMPRTCPSubflowReport *result = (GstMPRTCPSubflowReport *) header;
+  gst_mprtcp_report_init (result);
   return result;
 }
 
 GstMPRTCPSubflowBlock *
-gst_mprtcp_riport_add_block_begin (GstMPRTCPSubflowRiport * riport,
+gst_mprtcp_riport_add_block_begin (GstMPRTCPSubflowReport * riport,
     guint16 subflow_id)
 {
   guint8 i, src, *ptr;
@@ -198,6 +200,25 @@ gst_mprtcp_riport_add_block_begin (GstMPRTCPSubflowRiport * riport,
   gst_rtcp_header_change (&riport->header, NULL, NULL, &src, NULL, NULL, NULL);
   return result;
 }
+
+
+void
+gst_mprtcp_riport_append_block (GstMPRTCPSubflowReport * report,
+    GstMPRTCPSubflowBlock * block)
+{
+  gpointer dst, src;
+  GstMPRTCPSubflowBlock *next;
+  guint8 block_length;
+  guint16 subflow_id;
+
+  gst_mprtcp_block_getdown (&block->info, NULL, &block_length, &subflow_id);
+  next = gst_mprtcp_riport_add_block_begin (report, subflow_id);
+  dst = (gpointer) next;
+  src = (gpointer) block;
+  memcpy (dst, src, (block_length + 1) << 2);
+  gst_mprtcp_riport_add_block_end (report, next);
+}
+
 
 GstRTCPSR *
 gst_mprtcp_riport_block_add_sr (GstMPRTCPSubflowBlock * block)
@@ -225,7 +246,7 @@ gst_mprtcp_riport_block_add_xr_rfc2743 (GstMPRTCPSubflowBlock * block)
 
 
 void
-gst_mprtcp_riport_add_block_end (GstMPRTCPSubflowRiport * riport,
+gst_mprtcp_riport_add_block_end (GstMPRTCPSubflowReport * riport,
     GstMPRTCPSubflowBlock * block)
 {
   guint16 riport_length, block_header_length;
@@ -285,13 +306,13 @@ gst_rtcp_get_next_header (GstRTCPBuffer * rtcp, GstRTCPHeader * actual)
 }
 
 GstMPRTCPSubflowBlock *
-gst_mprtcp_get_first_block (GstMPRTCPSubflowRiport * riport)
+gst_mprtcp_get_first_block (GstMPRTCPSubflowReport * riport)
 {
   return &riport->blocks;
 }
 
 GstMPRTCPSubflowBlock *
-gst_mprtcp_get_next_block (GstMPRTCPSubflowRiport * riport,
+gst_mprtcp_get_next_block (GstMPRTCPSubflowReport * riport,
     GstMPRTCPSubflowBlock * actual)
 {
   guint8 *next = (guint8 *) actual;
@@ -504,7 +525,7 @@ gst_rtcp_xr_rfc7243_getdown (GstRTCPXR_RFC7243 * riport,
 
 
 void
-gst_mprtcp_riport_init (GstMPRTCPSubflowRiport * riport)
+gst_mprtcp_report_init (GstMPRTCPSubflowReport * riport)
 {
   gst_rtcp_header_init (&riport->header);
   gst_rtcp_header_setup (&riport->header, FALSE, 0,
@@ -512,13 +533,13 @@ gst_mprtcp_riport_init (GstMPRTCPSubflowRiport * riport)
 }
 
 void
-gst_mprtcp_riport_setup (GstMPRTCPSubflowRiport * riport, guint32 ssrc)
+gst_mprtcp_riport_setup (GstMPRTCPSubflowReport * riport, guint32 ssrc)
 {
   riport->ssrc = g_htonl (ssrc);
 }
 
 void
-gst_mprtcp_riport_getdown (GstMPRTCPSubflowRiport * riport, guint32 * ssrc)
+gst_mprtcp_riport_getdown (GstMPRTCPSubflowReport * riport, guint32 * ssrc)
 {
   if (ssrc) {
     *ssrc = g_ntohl (riport->ssrc);
@@ -714,7 +735,7 @@ gst_print_rtcp (GstRTCPHeader * header)
         NULL, &payload_type, &length, NULL);
     switch (payload_type) {
       case MPRTCP_PACKET_TYPE_IDENTIFIER:
-        gst_print_mprtcp ((GstMPRTCPSubflowRiport *) step);
+        gst_print_mprtcp ((GstMPRTCPSubflowReport *) step);
         break;
       case GST_RTCP_TYPE_SR:
         gst_print_rtcp_sr ((GstRTCPSR *) step);
@@ -736,11 +757,11 @@ gst_print_rtcp (GstRTCPHeader * header)
 
 
 void
-gst_print_mprtcp (GstMPRTCPSubflowRiport * riport)
+gst_print_mprtcp (GstMPRTCPSubflowReport * riport)
 {
   gint index;
   GstMPRTCPSubflowBlock *block = &riport->blocks;
-  GstMPRTCPSubflowInfo *info;
+
   GstRTCPHeader *riport_header = &riport->header;
   guint32 ssrc;
   guint8 src;
@@ -753,22 +774,38 @@ gst_print_mprtcp (GstMPRTCPSubflowRiport * riport)
       "|%63u|\n", ssrc);
 
   for (index = 0; index < src; ++index) {
-    guint8 type, block_length;
-    guint16 subflow_id;
-    info = &block->info;
-    gst_mprtcp_block_getdown (info, &type, &block_length, &subflow_id);
-
-    g_print
-        ("+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+\n"
-        "|%15u|%15u|%31d|\n", type, block_length, subflow_id);
-
-    gst_print_rtcp (&block->block_header);
+    guint8 block_length;
+    gst_print_mprtcp_block (block, &block_length);
     block =
         (GstMPRTCPSubflowBlock *) ((guint8 *) block) + ((block_length +
             1) << 2);
   }
 }
 
+void
+gst_print_mprtcp_block (GstMPRTCPSubflowBlock * block, guint8 * block_length)
+{
+  guint8 type;
+  guint16 subflow_id;
+  GstMPRTCPSubflowInfo *info;
+  guint8 *_block_length = NULL, _substitue;
+
+  if (!block_length)
+    _block_length = &_substitue;
+  else
+    _block_length = block_length;
+
+
+  info = &block->info;
+  gst_mprtcp_block_getdown (info, &type, _block_length, &subflow_id);
+
+  g_print
+      ("+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+\n"
+      "|%15u|%15u|%31d|\n", type, *_block_length, subflow_id);
+
+  gst_print_rtcp (&block->block_header);
+
+}
 
 void
 gst_print_rtcp_header (GstRTCPHeader * header)
@@ -963,4 +1000,91 @@ gst_print_rtp_packet_info (GstRTPBuffer * rtp)
     g_print
         ("+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+\n");
   }
+}
+
+
+//Copied from RFC3550
+gdouble
+rtcp_interval (gint senders,
+    gint members,
+    gdouble rtcp_bw, gint we_sent, gdouble avg_rtcp_size, gint initial)
+{
+  /*
+   * Minimum average time between RTCP packets from this site (in
+   * seconds).  This time prevents the reports from `clumping' when
+   * sessions are small and the law of large numbers isn't helping
+   * to smooth out the traffic.  It also keeps the report interval
+   * from becoming ridiculously small during transient outages like
+   * a network partition.
+   */
+  gdouble const RTCP_MIN_TIME = 5.;
+  /*
+   * Fraction of the RTCP bandwidth to be shared among active
+   * senders.  (This fraction was chosen so that in a typical
+   * session with one or two active senders, the computed report
+   * time would be roughly equal to the minimum report time so that
+   * we don't unnecessarily slow down receiver reports.)  The
+   * receiver fraction must be 1 - the sender fraction.
+   */
+  gdouble const RTCP_SENDER_BW_FRACTION = 0.25;
+  gdouble const RTCP_RCVR_BW_FRACTION = (1 - RTCP_SENDER_BW_FRACTION);
+  /*
+   * To compensate for "timer reconsideration" converging to a
+   * value below the intended average.
+   */
+  gdouble const COMPENSATION = 2.71828 - 1.5;
+
+  gdouble t;                    /* interval */
+  gdouble rtcp_min_time = RTCP_MIN_TIME;
+
+  gint n;                       /* no. of members for computation */
+
+  /*
+   * Very first call at application start-up uses half the min
+   * delay for quicker notification while still allowing some time
+   * before reporting for randomization and to learn about other
+   * sources so the report interval will converge to the correct
+   * interval more quickly.
+
+   */
+  if (initial) {
+    rtcp_min_time /= 2;
+  }
+  /*
+   * Dedicate a fraction of the RTCP bandwidth to senders unless
+   * the number of senders is large enough that their share is
+   * more than that fraction.
+   */
+  n = members;
+  if (senders <= members * RTCP_SENDER_BW_FRACTION) {
+    if (we_sent) {
+      rtcp_bw *= RTCP_SENDER_BW_FRACTION;
+      n = senders;
+    } else {
+      rtcp_bw *= RTCP_RCVR_BW_FRACTION;
+      n -= senders;
+    }
+  }
+
+  /*
+   * The effective number of sites times the average packet size is
+   * the total number of octets sent when each site sends a report.
+   * Dividing this by the effective bandwidth gives the time
+   * interval over which those packets must be sent in order to
+   * meet the bandwidth target, with a minimum enforced.  In that
+   * time interval we send one report so this time is also our
+   * average time between reports.
+   */
+  t = avg_rtcp_size * n / rtcp_bw;
+  if (t < rtcp_min_time)
+    t = rtcp_min_time;
+
+  /*
+   * To avoid traffic bursts from unintended synchronization with
+   * other sites, we then pick our actual next report interval as a
+   * random number uniformly distributed between 0.5*t and 1.5*t.
+   */
+  t = t * (drand48 () + 0.5);
+  t = t / COMPENSATION;
+  return t;
 }

@@ -16,6 +16,7 @@
 
 typedef struct _SndEventBasedController SndEventBasedController;
 typedef struct _SndEventBasedControllerClass SndEventBasedControllerClass;
+typedef struct _ControllerRecord ControllerRecord;
 
 #define SEFCTRLER_TYPE             (sefctrler_get_type())
 #define SEFCTRLER(src)             (G_TYPE_CHECK_INSTANCE_CAST((src),SEFCTRLER_TYPE,SndEventBasedController))
@@ -36,9 +37,13 @@ struct _SndEventBasedController
   StreamSplitter*   splitter;
   GstClock*         sysclock;
   guint             subflow_num;
-  gfloat            goodput_nc_sum;
-  gfloat            goodput_c_sum;
-  gfloat            goodput_l_sum;
+  ControllerRecord* records;
+  gint              records_max;
+  gint              records_index;
+  guint64           changed_num;
+  gboolean          pacing;
+
+  gboolean          new_report_arrived;
   gboolean          bids_recalc_requested;
   gboolean          bids_commit_requested;
   guint32           ssrc;
@@ -59,7 +64,8 @@ void sefctrler_setup(SndEventBasedController* this,
 
 void sefctrler_set_callbacks(void(**riport_can_flow_indicator)(gpointer),
                              void(**controller_add_path)(gpointer,guint8,MPRTPSPath*),
-                             void(**controller_rem_path)(gpointer,guint8));
+                             void(**controller_rem_path)(gpointer,guint8),
+                             void(**controller_pacing)(gpointer, gboolean));
 
 GstBufferReceiverFunc
 sefctrler_setup_mprtcp_exchange(SndEventBasedController * this,

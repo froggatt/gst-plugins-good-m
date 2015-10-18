@@ -39,6 +39,7 @@
 #include "gstmprtpsender.h"
 #include "mprtpspath.h"
 #include "gstmprtcpbuffer.h"
+#include <string.h>
 
 GST_DEBUG_CATEGORY_STATIC (gst_mprtpsender_debug_category);
 #define GST_CAT_DEFAULT gst_mprtpsender_debug_category
@@ -48,10 +49,9 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpsender_debug_category);
 #define THIS_READLOCK(this) (g_rw_lock_reader_lock(&this->rwmutex))
 #define THIS_READUNLOCK(this) (g_rw_lock_reader_unlock(&this->rwmutex))
 
-#define PACKET_IS_RTP(b) (b > 0x7f && b < 0xc0)
+#define PACKET_IS_RTP_OR_RTCP(b) (b > 0x7f && b < 0xc0)
 #define PACKET_IS_DTLS(b) (b > 0x13 && b < 0x40)
 #define PACKET_IS_RTCP(b) (b > 192 && b < 223)
-
 
 
 static void gst_mprtpsender_set_property (GObject * object,
@@ -75,25 +75,34 @@ static void gst_mprtpsender_src_unlink (GstPad * pad, GstObject * parent);
 
 static GstFlowReturn gst_mprtpsender_mprtp_sink_chain (GstPad * pad,
     GstObject * parent, GstBuffer * buffer);
-static gboolean
-gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad, GstObject * parent,
-    GstEvent * event);
 
+static GstFlowReturn
+gst_mprtpsender_mprtcp_sink_chain (GstPad * pad, GstObject * parent,
+    GstBuffer * buf);
+
+static gboolean gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad,
+    GstObject * parent, GstEvent * event);
 
 typedef struct
 {
   GstPad *outpad;
   guint8 state;
   guint8 id;
+
+  GstClock *sysclock;
 } Subflow;
 
 
-static gboolean
-_select_subflow (GstMprtpsender * this, guint8 id, Subflow ** result);
+static GstBuffer *_assemble_report (Subflow * this, GstBuffer * blocks);
+static Subflow *_get_subflow_from_blocks (GstMprtpsender * this,
+    GstBuffer * blocks);
+static gboolean _select_subflow (GstMprtpsender * this, guint8 id,
+    Subflow ** result);
 
 enum
 {
   PROP_0,
+  PROP_MPRTP_EXT_HEADER_ID,
   PROP_PIVOT_OUTPAD,
 };
 
@@ -103,8 +112,7 @@ static GstStaticPadTemplate gst_mprtpsender_src_template =
 GST_STATIC_PAD_TEMPLATE ("src_%u",
     GST_PAD_SRC,
     GST_PAD_REQUEST,
-    GST_STATIC_CAPS ("ANY")
-    );
+    GST_STATIC_CAPS_ANY);
 
 
 static GstStaticPadTemplate gst_mprtpsender_mprtp_sink_template =
@@ -115,36 +123,18 @@ GST_STATIC_PAD_TEMPLATE ("mprtp_sink",
 
 
 static GstStaticPadTemplate gst_mprtpsender_mprtcp_rr_sink_template =
-    GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_sink",
+GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
-    );
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 static GstStaticPadTemplate gst_mprtpsender_mprtcp_sr_sink_template =
-    GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_sink",
+GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
-    );
-
-
-static GstStaticPadTemplate gst_mprtpsender_rtcp_sink_template =
-    GST_STATIC_PAD_TEMPLATE ("rtcp_sink",
-    GST_PAD_SINK,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
-    );
-
-
-static GstStaticPadTemplate gst_mprtpsender_rtcp_src_template =
-    GST_STATIC_PAD_TEMPLATE ("rtcp_src",
-    GST_PAD_SRC,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/x-rtcp;application/x-srtcp")
-    );
-
-
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 /* class initialization */
 
@@ -175,13 +165,34 @@ gst_mprtpsender_mprtp_sink_event_handler (GstPad * pad, GstObject * parent,
   gboolean result = TRUE;
   GList *it;
   Subflow *subflow;
+  const gchar *stream_id;
+  const GstSegment *segment;
+  GstCaps *caps;
 
   this = GST_MPRTPSENDER (parent);
   THIS_WRITELOCK (this);
-
   switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_STREAM_START:
+      if (this->event_stream_start != NULL) {
+        gst_event_unref (this->event_stream_start);
+      }
+      gst_event_parse_stream_start (event, &stream_id);
+      this->event_stream_start = gst_event_new_stream_start (stream_id);
+      goto sending;
     case GST_EVENT_SEGMENT:
+      if (this->event_segment != NULL) {
+        gst_event_unref (this->event_segment);
+      }
+      gst_event_parse_segment (event, &segment);
+      this->event_segment = gst_event_new_segment (segment);
+      goto sending;
     case GST_EVENT_CAPS:
+      if (this->event_caps != NULL) {
+        gst_event_unref (this->event_caps);
+      }
+      gst_event_parse_caps (event, &caps);
+      this->event_caps = gst_event_new_caps (caps);
+    sending:
       for (subflow = NULL, it = this->subflows; it != NULL; it = it->next) {
         subflow = it->data;
         result &= gst_pad_push_event (subflow->outpad, gst_event_copy (event));
@@ -214,10 +225,6 @@ gst_mprtpsender_class_init (GstMprtpsenderClass * klass)
       gst_static_pad_template_get (&gst_mprtpsender_mprtcp_rr_sink_template));
   gst_element_class_add_pad_template (element_class,
       gst_static_pad_template_get (&gst_mprtpsender_mprtp_sink_template));
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&gst_mprtpsender_rtcp_sink_template));
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&gst_mprtpsender_rtcp_src_template));
 
   gst_element_class_set_static_metadata (GST_ELEMENT_CLASS (klass),
       "FIXME Long name", "Generic", "FIXME Description",
@@ -233,6 +240,12 @@ gst_mprtpsender_class_init (GstMprtpsenderClass * klass)
   element_class->change_state =
       GST_DEBUG_FUNCPTR (gst_mprtpsender_change_state);
   element_class->query = GST_DEBUG_FUNCPTR (gst_mprtpsender_query);
+
+  g_object_class_install_property (gobject_class, PROP_MPRTP_EXT_HEADER_ID,
+      g_param_spec_uint ("mprtp-ext-header-id",
+          "Set or get the id for the RTP extension",
+          "Sets or gets the id for the extension header the MpRTP based on. The default is 3",
+          0, 15, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_PIVOT_OUTPAD,
       g_param_spec_uint ("pivot-outpad",
@@ -251,7 +264,7 @@ gst_mprtpsender_init (GstMprtpsender * mprtpsender)
       gst_pad_new_from_static_template
       (&gst_mprtpsender_mprtcp_rr_sink_template, "mprtcp_rr_sink");
   gst_pad_set_chain_function (mprtpsender->mprtcp_rr_sinkpad,
-      GST_DEBUG_FUNCPTR (gst_mprtpsender_mprtp_sink_chain));
+      GST_DEBUG_FUNCPTR (gst_mprtpsender_mprtcp_sink_chain));
   gst_element_add_pad (GST_ELEMENT (mprtpsender),
       mprtpsender->mprtcp_rr_sinkpad);
 
@@ -259,7 +272,7 @@ gst_mprtpsender_init (GstMprtpsender * mprtpsender)
       gst_pad_new_from_static_template
       (&gst_mprtpsender_mprtcp_sr_sink_template, "mprtcp_sr_sink");
   gst_pad_set_chain_function (mprtpsender->mprtcp_sr_sinkpad,
-      GST_DEBUG_FUNCPTR (gst_mprtpsender_mprtp_sink_chain));
+      GST_DEBUG_FUNCPTR (gst_mprtpsender_mprtcp_sink_chain));
   gst_element_add_pad (GST_ELEMENT (mprtpsender),
       mprtpsender->mprtcp_sr_sinkpad);
 
@@ -276,8 +289,11 @@ gst_mprtpsender_init (GstMprtpsender * mprtpsender)
 //  GST_PAD_SET_PROXY_CAPS (mprtpsender->mprtp_sinkpad);
 //  GST_PAD_SET_PROXY_ALLOCATION (mprtpsender->mprtp_sinkpad);
 
-  mprtpsender->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
+  mprtpsender->mprtp_ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
   mprtpsender->pivot_outpad = NULL;
+  mprtpsender->event_segment = NULL;
+  mprtpsender->event_caps = NULL;
+  mprtpsender->event_stream_start = NULL;
   //mprtpsender->events = g_queue_new();
   g_rw_lock_init (&mprtpsender->rwmutex);
 }
@@ -292,6 +308,11 @@ gst_mprtpsender_set_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "set_property");
 
   switch (property_id) {
+    case PROP_MPRTP_EXT_HEADER_ID:
+      THIS_WRITELOCK (this);
+      this->mprtp_ext_header_id = (guint8) g_value_get_uint (value);
+      THIS_WRITEUNLOCK (this);
+      break;
     case PROP_PIVOT_OUTPAD:
       THIS_WRITELOCK (this);
       subflow_id = (guint8) g_value_get_uint (value);
@@ -312,11 +333,16 @@ void
 gst_mprtpsender_get_property (GObject * object, guint property_id,
     GValue * value, GParamSpec * pspec)
 {
-  GstMprtpsender *mprtpsender = GST_MPRTPSENDER (object);
+  GstMprtpsender *this = GST_MPRTPSENDER (object);
 
-  GST_DEBUG_OBJECT (mprtpsender, "get_property");
+  GST_DEBUG_OBJECT (this, "get_property");
 
   switch (property_id) {
+    case PROP_MPRTP_EXT_HEADER_ID:
+      THIS_READLOCK (this);
+      g_value_set_uint (value, (guint) this->mprtp_ext_header_id);
+      THIS_READUNLOCK (this);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -355,15 +381,15 @@ gst_mprtpsender_request_new_pad (GstElement * element, GstPadTemplate * templ,
 {
 
   GstPad *srcpad;
-  GstMprtpsender *mprtcps;
+  GstMprtpsender *this;
   guint8 subflow_id;
   Subflow *subflow;
 
-  mprtcps = GST_MPRTPSENDER (element);
-  GST_DEBUG_OBJECT (mprtcps, "requesting pad");
+  this = GST_MPRTPSENDER (element);
+  GST_DEBUG_OBJECT (this, "requesting pad");
 
   sscanf (name, "src_%hhu", &subflow_id);
-  THIS_WRITELOCK (mprtcps);
+  THIS_WRITELOCK (this);
   subflow = (Subflow *) g_malloc0 (sizeof (Subflow));
 
   srcpad = gst_pad_new_from_template (templ, name);
@@ -377,12 +403,13 @@ gst_mprtpsender_request_new_pad (GstElement * element, GstPadTemplate * templ,
   subflow->id = subflow_id;
   subflow->outpad = srcpad;
   subflow->state = 0;
-  mprtcps->subflows = g_list_prepend (mprtcps->subflows, subflow);
-  THIS_WRITEUNLOCK (mprtcps);
-
-  gst_element_add_pad (GST_ELEMENT (mprtcps), srcpad);
+  subflow->sysclock = gst_system_clock_obtain ();
+  this->subflows = g_list_prepend (this->subflows, subflow);
+  THIS_WRITEUNLOCK (this);
 
   gst_pad_set_active (srcpad, TRUE);
+
+  gst_element_add_pad (GST_ELEMENT (this), srcpad);
 
   return srcpad;
 }
@@ -453,16 +480,16 @@ gst_mprtpsender_query (GstElement * element, GstQuery * query)
 static GstPadLinkReturn
 gst_mprtpsender_src_link (GstPad * pad, GstObject * parent, GstPad * peer)
 {
-  GstMprtpsender *mprtpsender;
+  GstMprtpsender *this;
   GList *it;
   Subflow *subflow;
   GstPadLinkReturn result = GST_PAD_LINK_OK;
 
-  mprtpsender = GST_MPRTPSENDER (parent);
-  GST_DEBUG_OBJECT (mprtpsender, "link");
-  THIS_READLOCK (mprtpsender);
+  this = GST_MPRTPSENDER (parent);
+  GST_DEBUG_OBJECT (this, "link");
+  THIS_READLOCK (this);
 
-  for (subflow = NULL, it = mprtpsender->subflows; it != NULL; it = it->next) {
+  for (subflow = NULL, it = this->subflows; it != NULL; it = it->next) {
     subflow = it->data;
     if (subflow->outpad == pad) {
       break;
@@ -473,9 +500,19 @@ gst_mprtpsender_src_link (GstPad * pad, GstObject * parent, GstPad * peer)
     goto gst_mprtpsender_src_link_done;
   }
   subflow->state = 0;
+  if (this->event_stream_start != NULL) {
+    gst_pad_push_event (subflow->outpad,
+        gst_event_copy (this->event_stream_start));
+  }
+  if (this->event_caps != NULL) {
+    gst_pad_push_event (subflow->outpad, gst_event_copy (this->event_caps));
+  }
+  if (this->event_segment != NULL) {
+    gst_pad_push_event (subflow->outpad, gst_event_copy (this->event_segment));
+  }
 
 gst_mprtpsender_src_link_done:
-  THIS_READUNLOCK (mprtpsender);
+  THIS_READUNLOCK (this);
   return result;
 }
 
@@ -500,7 +537,7 @@ gst_mprtpsender_src_unlink (GstPad * pad, GstObject * parent)
   if (subflow == NULL) {
     goto gst_mprtpsender_src_unlink_done;
   }
-
+  gst_object_unref (subflow->sysclock);
   mprtpsender->subflows = g_list_remove (mprtpsender->subflows, subflow);
 gst_mprtpsender_src_unlink_done:
   THIS_WRITEUNLOCK (mprtpsender);
@@ -534,7 +571,20 @@ _get_packet_mptype (GstMprtpsender * this,
     goto done;
   }
 
-  if (PACKET_IS_RTP (first_byte)) {
+  if (PACKET_IS_RTP_OR_RTCP (first_byte)) {
+    if (PACKET_IS_RTCP (second_byte)) {
+      if (second_byte != MPRTCP_PACKET_TYPE_IDENTIFIER) {
+        goto done;
+      }
+      if (subflow_id) {
+        *subflow_id = (guint8)
+            g_ntohs (*((guint16 *) (info->data + 8 /*RTCP Header */  +
+                    6 /*first block info until subflow id */ )));
+      }
+      result = PACKET_IS_MPRTCP;
+      goto done;
+    }
+
     if (G_UNLIKELY (!gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp))) {
       GST_WARNING_OBJECT (this, "The RTP packet is not readable");
       goto done;
@@ -545,8 +595,8 @@ _get_packet_mptype (GstMprtpsender * this,
       goto done;
     }
 
-    if (!gst_rtp_buffer_get_extension_onebyte_header (&rtp, this->ext_header_id,
-            0, &pointer, &size)) {
+    if (!gst_rtp_buffer_get_extension_onebyte_header (&rtp,
+            this->mprtp_ext_header_id, 0, &pointer, &size)) {
       gst_rtp_buffer_unmap (&rtp);
       goto done;
     }
@@ -554,24 +604,17 @@ _get_packet_mptype (GstMprtpsender * this,
     if (subflow_id) {
       subflow_infos = (MPRTPSubflowHeaderExtension *) pointer;
       *subflow_id = subflow_infos->id;
+
+      //SRTP validation - it must be fail
+//      gst_rtp_buffer_add_extension_onebyte_header (&rtp, 2,
+//            (gpointer) subflow_infos, sizeof (*subflow_infos));
     }
     gst_rtp_buffer_unmap (&rtp);
     result = PACKET_IS_MPRTP;
     goto done;
   }
 
-  if (PACKET_IS_RTCP (second_byte)) {
-    if (second_byte != MPRTCP_PACKET_TYPE_IDENTIFIER) {
-      goto done;
-    }
-    if (subflow_id) {
-      *subflow_id = (guint8)
-          g_ntohs (*((guint16 *) (info->data + 8 /*RTCP Header */  +
-                  6 /*first block info until subflow id */ )));
-    }
-    result = PACKET_IS_MPRTCP;
-    goto done;
-  }
+
 done:
   return result;
 }
@@ -606,7 +649,6 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
     goto done;
   }
   packet_type = _get_packet_mptype (this, buf, &map, &subflow_id);
-
   if (packet_type != PACKET_IS_NOT_MP &&
       _select_subflow (this, subflow_id, &subflow) != FALSE) {
     outpad = subflow->outpad;
@@ -616,7 +658,7 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
     outpad = this->pivot_outpad;
   } else {
     if (n > 1) {
-      r = g_random_int_range (0, n - 1);
+      r = g_random_int_range (0, n);
       subflow = g_list_nth (this->subflows, r)->data;
       outpad = subflow->outpad;
     } else {
@@ -624,15 +666,100 @@ gst_mprtpsender_mprtp_sink_chain (GstPad * pad, GstObject * parent,
       outpad = subflow->outpad;
     }
   }
-
   gst_buffer_unmap (buf, &map);
   result = gst_pad_push (outpad, buf);
 done:
   THIS_READUNLOCK (this);
 exit:
   return result;
+
 }
 
+
+static GstFlowReturn
+gst_mprtpsender_mprtcp_sink_chain (GstPad * pad, GstObject * parent,
+    GstBuffer * buf)
+{
+  GstMprtpsender *this;
+  GstFlowReturn result = GST_FLOW_OK;
+  Subflow *subflow = NULL;
+  this = GST_MPRTPSENDER (parent);
+  THIS_READLOCK (this);
+  subflow = _get_subflow_from_blocks (this, buf);
+  if (!subflow) {
+    goto done;
+  }
+  result = gst_pad_push (subflow->outpad, _assemble_report (subflow, buf));
+
+done:
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+Subflow *
+_get_subflow_from_blocks (GstMprtpsender * this, GstBuffer * blocks)
+{
+  GstMapInfo map = GST_MAP_INFO_INIT;
+  Subflow *result = NULL;
+  guint16 subflow_id;
+  GstMPRTCPSubflowBlock *block;
+  if (!gst_buffer_map (blocks, &map, GST_MAP_READ)) {
+    GST_ERROR_OBJECT (this, "Buffer is not readable");
+    goto done;
+  }
+  block = (GstMPRTCPSubflowBlock *) map.data;
+  gst_mprtcp_block_getdown (&block->info, NULL, NULL, &subflow_id);
+  if (!_select_subflow (this, subflow_id, &result)) {
+    result = NULL;
+  }
+done:
+  return result;
+}
+
+GstBuffer *
+_assemble_report (Subflow * this, GstBuffer * blocks)
+{
+  GstBuffer *result;
+  gpointer dataptr;
+  GstMPRTCPSubflowReport report;
+  GstMPRTCPSubflowBlock *block;
+  guint16 length;
+  guint16 offset;
+  guint8 block_length;
+  guint16 subflow_id, prev_subflow_id = 0;
+  guint8 src = 0;
+  GstMapInfo map = GST_MAP_INFO_INIT;
+
+  gst_mprtcp_report_init (&report);
+  gst_rtcp_header_getdown (&report.header, NULL, NULL, NULL, NULL, &length,
+      NULL);
+  length = (length + 1) << 2;
+  dataptr = g_malloc0 (length);
+  memcpy (dataptr, &report, length);
+  result = gst_buffer_new_wrapped (dataptr, length);
+
+  if (!gst_buffer_map (blocks, &map, GST_MAP_READ)) {
+    GST_ERROR_OBJECT (this, "Buffer is not readable");
+    goto exit;
+  }
+  for (offset = 0, src = 0, block = (GstMPRTCPSubflowBlock *) map.data + offset;
+      offset < map.size; offset += (block_length + 1) << 2, ++src) {
+
+    gst_mprtcp_block_getdown (&block->info, NULL, &block_length, &subflow_id);
+    if (prev_subflow_id > 0 && subflow_id != prev_subflow_id) {
+      GST_WARNING ("MPRTCP block comes from multiple sources subflow");
+    }
+  }
+  gst_buffer_unmap (blocks, &map);
+  result = gst_buffer_append (result, blocks);
+  gst_buffer_map (result, &map, GST_MAP_WRITE);
+  gst_rtcp_header_change ((GstRTCPHeader *) map.data, NULL, NULL, &src,
+      NULL, NULL, NULL);
+
+  gst_buffer_unmap (result, &map);
+exit:
+  return result;
+}
 
 gboolean
 _select_subflow (GstMprtpsender * this, guint8 id, Subflow ** result)
@@ -652,9 +779,10 @@ _select_subflow (GstMprtpsender * this, guint8 id, Subflow ** result)
 }
 
 
+
 #undef THIS_WRITELOCK
 #undef THIS_WRITEUNLOCK
 #undef THIS_READLOCK
 #undef THIS_READUNLOCK
-#undef PACKET_IS_RTP
+#undef PACKET_IS_RTP_OR_RTCP
 #undef PACKET_IS_DTLS

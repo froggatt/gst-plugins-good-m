@@ -36,6 +36,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <gst/gst.h>
 #include "gstmprtpscheduler.h"
 #include "mprtpspath.h"
@@ -47,7 +48,7 @@
 GST_DEBUG_CATEGORY_STATIC (gst_mprtpscheduler_debug_category);
 #define GST_CAT_DEFAULT gst_mprtpscheduler_debug_category
 
-#define PACKET_IS_RTP(b) (b > 0x7f && b < 0xc0)
+#define PACKET_IS_RTP_OR_RTCP(b) (b > 0x7f && b < 0xc0)
 
 #define THIS_WRITELOCK(this) (g_rw_lock_writer_lock(&this->rwmutex))
 #define THIS_WRITEUNLOCK(this) (g_rw_lock_writer_unlock(&this->rwmutex))
@@ -57,6 +58,7 @@ GST_DEBUG_CATEGORY_STATIC (gst_mprtpscheduler_debug_category);
 #define MPRTP_SENDER_DEFAULT_ALPHA_VALUE 0.5
 #define MPRTP_SENDER_DEFAULT_BETA_VALUE 0.1
 #define MPRTP_SENDER_DEFAULT_GAMMA_VALUE 0.2
+#define MPRTP_DEFAULT_MAX_RETAIN_TIME_IN_MS 30
 
 
 static void gst_mprtpscheduler_set_property (GObject * object,
@@ -96,20 +98,43 @@ static void _change_auto_flow_controlling_mode (GstMprtpscheduler * this,
     gboolean new_flow_controlling_mode);
 static gboolean gst_mprtpscheduler_mprtp_src_event (GstPad * pad,
     GstObject * parent, GstEvent * event);
+static GstStructure *_collect_infos (GstMprtpscheduler * this);
+static void gst_mprtpscheduler_retain_process_run (void *data);
+static gboolean _retain_buffer (GstMprtpscheduler * this, GstBuffer * buf);
+
+static gboolean
+_do_retain_buffer (GstMprtpscheduler * this,
+    GstBuffer * buffer, MPRTPSPath ** selected);
+static GstFlowReturn
+_send_rtp_buffer (GstMprtpscheduler * this,
+    MPRTPSPath * path, GstBuffer * buffer);
+static gboolean
+_retain_queue_try_push (GstMprtpscheduler * this, GstBuffer * result,
+    GstClockTime time);
+static gboolean _retain_queue_try_pull (GstMprtpscheduler * this,
+    GstBuffer ** result);
+static void _retain_queue_pop (GstMprtpscheduler * this);
+
+static gboolean
+_retain_queue_head (GstMprtpscheduler * this, GstBuffer ** result);
+
 
 enum
 {
   PROP_0,
-  PROP_ALPHA,
-  PROP_BETA,
-  PROP_GAMMA,
-  PROP_EXT_HEADER_ID,
+  PROP_MPRTP_EXT_HEADER_ID,
+  PROP_ABS_TIME_EXT_HEADER_ID,
   PROP_JOIN_SUBFLOW,
   PROP_DETACH_SUBFLOW,
   PROP_SET_SUBFLOW_NON_CONGESTED,
   PROP_SET_SUBFLOW_CONGESTED,
   PROP_AUTO_FLOW_CONTROLLING,
   PROP_SET_SENDING_BID,
+  PROP_RETAIN_BUFFERS,
+  PROP_SUBFLOWS_STATS,
+  PROP_RETAIN_MAX_TIME_IN_MS,
+  PROP_SET_MAX_BYTES_PER_MS,
+  PROP_PACING_BUFFERS,
 };
 
 /* pad templates */
@@ -134,16 +159,16 @@ static GstStaticPadTemplate gst_mprtpscheduler_mprtcp_rr_sink_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_rr_sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("ANY")
-    );
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 
 static GstStaticPadTemplate gst_mprtpscheduler_mprtcp_sr_src_template =
 GST_STATIC_PAD_TEMPLATE ("mprtcp_sr_src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("ANY")
-    );
+//    GST_STATIC_CAPS ("application/x-rtcp")
+    GST_STATIC_CAPS_ANY);
 
 
 /* class initialization */
@@ -201,6 +226,19 @@ gst_mprtpscheduler_class_init (GstMprtpschedulerClass * klass)
   element_class->query = GST_DEBUG_FUNCPTR (gst_mprtpscheduler_query);
 
 
+  g_object_class_install_property (gobject_class, PROP_MPRTP_EXT_HEADER_ID,
+      g_param_spec_uint ("mprtp-ext-header-id",
+          "Set or get the id for the Multipath RTP extension",
+          "Sets or gets the id for the extension header the MpRTP based on. The default is 3",
+          0, 15, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+
+  g_object_class_install_property (gobject_class, PROP_ABS_TIME_EXT_HEADER_ID,
+      g_param_spec_uint ("abs-time-ext-header-id",
+          "Set or get the id for the absolute time RTP extension",
+          "Sets or gets the id for the extension header the absolute time based on. The default is 8",
+          0, 15, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_JOIN_SUBFLOW,
       g_param_spec_uint ("join-subflow", "the subflow id requested to join",
           "Join a subflow with a given id.", 0,
@@ -233,12 +271,48 @@ gst_mprtpscheduler_class_init (GstMprtpschedulerClass * klass)
           "sender riports.",
           FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_RETAIN_BUFFERS,
+      g_param_spec_boolean ("retaining",
+          "Indicate weather the scheduler retain buffers",
+          "Indicate weather the schdeuler retain buffers if "
+          "no active suflows or if the subflows are overused",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_SET_SENDING_BID,
       g_param_spec_uint ("setup-sending-bid",
           "set the sending bid for a subflow",
           "A 32bit unsigned integer for setup a bid. The first 8 bit identifies the subflow, the latter the bid for the subflow",
           0, 4294967295, 0, G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_SET_MAX_BYTES_PER_MS,
+      g_param_spec_uint ("setup-max-byte-per-ms",
+          "set the maximum allowed bytes per millisecond for pacing",
+          "A 32bit unsigned integer for setup the value. The first 8 bit identifies the subflow, the latter the maximum allowed bytes per ms for the subflow",
+          0, 4294967295, 0, G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_PACING_BUFFERS,
+      g_param_spec_boolean ("pacing",
+          "Indicate weather the scheduler pacing the traffic or not",
+          "Indicate weather the scheduler pacing the traffic or not if"
+          "suflows overuse the paths regarding to the goodputs",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+
+  g_object_class_install_property (gobject_class, PROP_RETAIN_MAX_TIME_IN_MS,
+      g_param_spec_uint ("retain-max-time",
+          "WE DON'T CARE DIFFERENT TYPE OF QUEES HERE, I SUFFERED ENOUGH WITH OTHER THINGS, SO THIS PROPERTY IS GOING TO BE OBSOLATED."
+          "Set the maximum time in ms the scheduler can retain a buffer (default: 30ms)",
+          "If the scheduler can retain buffers for pacing or "
+          "temporary no active subflow reasons, here you can set the "
+          "maximum time for waiting",
+          0, 500, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_SUBFLOWS_STATS,
+      g_param_spec_string ("subflow-stats",
+          "Extract subflow stats",
+          "Collect subflow statistics and return with "
+          "a structure contains it",
+          "NULL", G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 }
 
 static void
@@ -293,10 +367,20 @@ gst_mprtpscheduler_init (GstMprtpscheduler * this)
   this->alpha_value = MPRTP_SENDER_DEFAULT_ALPHA_VALUE;
   this->beta_value = MPRTP_SENDER_DEFAULT_BETA_VALUE;
   this->gamma_value = MPRTP_SENDER_DEFAULT_GAMMA_VALUE;
+  this->retain_allowed = TRUE;
 
+  this->retained_thread =
+      gst_task_new (gst_mprtpscheduler_retain_process_run, this, NULL);
+  this->retained_queue_counter = 0;
+  this->retained_process_started = FALSE;
+  this->retained_queue_read_index = 0;
+  this->retained_queue_write_index = 0;
+  this->sysclock = gst_system_clock_obtain ();
+  this->retain_max_time_in_ms = MPRTP_DEFAULT_MAX_RETAIN_TIME_IN_MS;
   g_rw_lock_init (&this->rwmutex);
   this->paths = g_hash_table_new_full (NULL, NULL, NULL, g_free);
-  this->ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
+  this->mprtp_ext_header_id = MPRTP_DEFAULT_EXTENSION_HEADER_ID;
+  this->abs_time_ext_header_id = ABS_TIME_DEFAULT_EXTENSION_HEADER_ID;
   this->paths = g_hash_table_new_full (NULL, NULL, NULL, g_free);
   this->splitter = (StreamSplitter *) g_object_new (STREAM_SPLITTER_TYPE, NULL);
   this->controller = NULL;
@@ -319,12 +403,18 @@ gst_mprtpscheduler_dispose (GObject * object)
 void
 gst_mprtpscheduler_finalize (GObject * object)
 {
-  GstMprtpscheduler *mprtpscheduler = GST_MPRTPSCHEDULER (object);
+  GstMprtpscheduler *this = GST_MPRTPSCHEDULER (object);
 
-  GST_DEBUG_OBJECT (mprtpscheduler, "finalize");
+  GST_DEBUG_OBJECT (this, "finalize");
 
   /* clean up object here */
+  if (gst_task_get_state (this->retained_thread) == GST_TASK_STARTED) {
+    gst_task_stop (this->retained_thread);
+  }
+  gst_task_join (this->retained_thread);
+  gst_object_unref (this->retained_thread);
 
+  g_object_unref (this->sysclock);
   G_OBJECT_CLASS (gst_mprtpscheduler_parent_class)->finalize (object);
 }
 
@@ -337,28 +427,20 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
   gboolean gboolean_value;
   guint8 subflow_id;
   guint subflow_bid;
+  guint max_bytes_per_ms;
+  MPRTPSPath *path;
 
   GST_DEBUG_OBJECT (this, "set_property");
 
   switch (property_id) {
-    case PROP_ALPHA:
+    case PROP_MPRTP_EXT_HEADER_ID:
       THIS_WRITELOCK (this);
-      this->alpha_value = g_value_get_float (value);
+      this->mprtp_ext_header_id = (guint8) g_value_get_uint (value);
       THIS_WRITEUNLOCK (this);
       break;
-    case PROP_BETA:
+    case PROP_ABS_TIME_EXT_HEADER_ID:
       THIS_WRITELOCK (this);
-      this->beta_value = g_value_get_float (value);
-      THIS_WRITEUNLOCK (this);
-      break;
-    case PROP_GAMMA:
-      THIS_WRITELOCK (this);
-      this->gamma_value = g_value_get_float (value);
-      THIS_WRITEUNLOCK (this);
-      break;
-    case PROP_EXT_HEADER_ID:
-      THIS_WRITELOCK (this);
-      this->ext_header_id = g_value_get_int (value);
+      this->abs_time_ext_header_id = (guint8) g_value_get_uint (value);
       THIS_WRITEUNLOCK (this);
       break;
     case PROP_JOIN_SUBFLOW:
@@ -389,6 +471,23 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
       _change_auto_flow_controlling_mode (this, gboolean_value);
       THIS_WRITEUNLOCK (this);
       break;
+    case PROP_RETAIN_BUFFERS:
+      THIS_WRITELOCK (this);
+      gboolean_value = g_value_get_boolean (value);
+      this->retain_allowed = gboolean_value;
+      THIS_WRITEUNLOCK (this);
+      break;
+    case PROP_PACING_BUFFERS:
+      THIS_WRITELOCK (this);
+      gboolean_value = g_value_get_boolean (value);
+      this->controller_pacing (this->controller, gboolean_value);
+      THIS_WRITEUNLOCK (this);
+      break;
+    case PROP_RETAIN_MAX_TIME_IN_MS:
+      THIS_WRITELOCK (this);
+      this->retain_max_time_in_ms = g_value_get_uint (value);
+      THIS_WRITEUNLOCK (this);
+      break;
     case PROP_SET_SENDING_BID:
       THIS_WRITELOCK (this);
       guint_value = g_value_get_uint (value);
@@ -399,6 +498,18 @@ gst_mprtpscheduler_set_property (GObject * object, guint property_id,
       stream_splitter_commit_changes (this->splitter);
       THIS_WRITEUNLOCK (this);
       break;
+
+    case PROP_SET_MAX_BYTES_PER_MS:
+      THIS_WRITELOCK (this);
+      guint_value = g_value_get_uint (value);
+      subflow_id = (guint8) ((guint_value >> 24) & 0x000000FF);
+      path = NULL;
+      _try_get_path (this, subflow_id, &path);
+      max_bytes_per_ms = guint_value & 0x00FFFFFFUL;
+      mprtps_path_set_max_bytes_per_ms (path, max_bytes_per_ms);
+      THIS_WRITEUNLOCK (this);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -415,29 +526,35 @@ gst_mprtpscheduler_get_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "get_property");
 
   switch (property_id) {
-    case PROP_ALPHA:
+    case PROP_MPRTP_EXT_HEADER_ID:
       THIS_READLOCK (this);
-      g_value_set_float (value, this->alpha_value);
+      g_value_set_uint (value, (guint) this->mprtp_ext_header_id);
       THIS_READUNLOCK (this);
       break;
-    case PROP_BETA:
+    case PROP_ABS_TIME_EXT_HEADER_ID:
       THIS_READLOCK (this);
-      g_value_set_float (value, this->beta_value);
+      g_value_set_uint (value, (guint) this->abs_time_ext_header_id);
       THIS_READUNLOCK (this);
       break;
-    case PROP_GAMMA:
+    case PROP_RETAIN_MAX_TIME_IN_MS:
       THIS_READLOCK (this);
-      g_value_set_float (value, this->gamma_value);
-      THIS_READUNLOCK (this);
-      break;
-    case PROP_EXT_HEADER_ID:
-      THIS_READLOCK (this);
-      g_value_set_int (value, this->ext_header_id);
+      g_value_set_uint (value, (guint) this->retain_max_time_in_ms);
       THIS_READUNLOCK (this);
       break;
     case PROP_AUTO_FLOW_CONTROLLING:
       THIS_READLOCK (this);
       g_value_set_boolean (value, this->flow_controlling_mode);
+      THIS_READUNLOCK (this);
+      break;
+    case PROP_RETAIN_BUFFERS:
+      THIS_READLOCK (this);
+      g_value_set_boolean (value, this->retain_allowed);
+      THIS_READUNLOCK (this);
+      break;
+    case PROP_SUBFLOWS_STATS:
+      THIS_READLOCK (this);
+      g_value_set_string (value,
+          gst_structure_to_string (_collect_infos (this)));
       THIS_READUNLOCK (this);
       break;
     default:
@@ -446,6 +563,44 @@ gst_mprtpscheduler_get_property (GObject * object, guint property_id,
   }
 }
 
+
+GstStructure *
+_collect_infos (GstMprtpscheduler * this)
+{
+  GstStructure *result;
+  GHashTableIter iter;
+  gpointer key, val;
+  MPRTPSPath *path;
+  gint index = 0;
+  GValue g_value = { 0 };
+  gchar *field_name;
+  result = gst_structure_new ("SchedulerSubflowReports",
+      "length", G_TYPE_UINT, this->subflows_num, NULL);
+  g_value_init (&g_value, G_TYPE_UINT);
+  g_hash_table_iter_init (&iter, this->paths);
+  while (g_hash_table_iter_next (&iter, (gpointer) & key, (gpointer) & val)) {
+    path = (MPRTPSPath *) val;
+
+    field_name = g_strdup_printf ("subflow-%d-id", index);
+    g_value_set_uint (&g_value, mprtps_path_get_id (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-sent_packet_num", index);
+    g_value_set_uint (&g_value, mprtps_path_get_total_sent_packets_num (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    field_name = g_strdup_printf ("subflow-%d-sent_payload_bytes", index);
+    g_value_set_uint (&g_value,
+        mprtps_path_get_total_sent_payload_bytes (path));
+    gst_structure_set_value (result, field_name, &g_value);
+    g_free (field_name);
+
+    ++index;
+  }
+  return result;
+}
 
 gboolean
 gst_mprtpscheduler_mprtp_src_event (GstPad * pad, GstObject * parent,
@@ -481,7 +636,7 @@ _join_subflow (GstMprtpscheduler * this, guint subflow_id)
       make_mprtps_path (subflow_id));
   stream_splitter_add_path (this->splitter, subflow_id, path);
   this->controller_add_path (this->controller, subflow_id, path);
-
+  ++this->subflows_num;
 }
 
 void
@@ -500,6 +655,7 @@ _detach_subflow (GstMprtpscheduler * this, guint subflow_id)
   g_hash_table_remove (this->paths, GINT_TO_POINTER (subflow_id));
   stream_splitter_rem_path (this->splitter, subflow_id);
   this->controller_rem_path (this->controller, subflow_id);
+  --this->subflows_num;
 }
 
 
@@ -509,9 +665,11 @@ gst_mprtpscheduler_change_state (GstElement * element,
     GstStateChange transition)
 {
   GstStateChangeReturn ret;
+  GstMprtpscheduler *this;
 
   g_return_val_if_fail (GST_IS_MPRTPSCHEDULER (element),
       GST_STATE_CHANGE_FAILURE);
+  this = GST_MPRTPSCHEDULER (element);
 
   switch (transition) {
     case GST_STATE_CHANGE_NULL_TO_READY:
@@ -519,6 +677,8 @@ gst_mprtpscheduler_change_state (GstElement * element,
     case GST_STATE_CHANGE_READY_TO_PAUSED:
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
+      gst_task_set_lock (this->retained_thread, &this->retained_thread_mutex);
+      gst_task_pause (this->retained_thread);
       break;
     default:
       break;
@@ -583,47 +743,131 @@ gst_mprtpscheduler_rtp_sink_chain (GstPad * pad, GstObject * parent,
     GstBuffer * buffer)
 {
   GstMprtpscheduler *this;
-  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
-  GstBuffer *outbuf;
+  MPRTPSPath *path;
   GstFlowReturn result;
   guint8 first_byte;
-
+  GstClockTime now;
+  result = GST_FLOW_OK;
   this = GST_MPRTPSCHEDULER (parent);
-
   if (gst_buffer_extract (buffer, 0, &first_byte, 1) != 1) {
     GST_WARNING_OBJECT (this, "could not extract first byte from buffer");
     gst_buffer_unref (buffer);
     return GST_FLOW_OK;
   }
 
-  if (!PACKET_IS_RTP (first_byte)) {
-    GST_WARNING_OBJECT (this, "Not RTP Packet arrived ar rtp_sink");
+  if (!PACKET_IS_RTP_OR_RTCP (first_byte)) {
+    GST_WARNING_OBJECT (this, "Not RTP Packet arrived at rtp_sink");
     return gst_pad_push (this->mprtp_srcpad, buffer);
   }
   //the packet is rtp
+
+  now = gst_clock_get_time (this->sysclock);
+
+  THIS_READLOCK (this);
+  if (_do_retain_buffer (this, buffer, &path)) {
+    goto retain_and_done;
+  }
+  if (this->retained_queue_counter > 0) {
+    if (!_retain_queue_try_push (this, buffer, now)) {
+      GST_WARNING_OBJECT (this, "Retain buffer is full");
+      result = GST_FLOW_CUSTOM_ERROR;
+      goto done;
+    }
+    gst_buffer_ref (buffer);
+    while (_retain_queue_try_pull (this, &buffer)) {
+      result = _send_rtp_buffer (this, path, buffer);
+      if (result != GST_FLOW_OK) {
+        goto done;
+      }
+      if (_do_retain_buffer (this, buffer, &path)) {
+        goto retain_and_done;
+      }
+    }
+    goto done;
+  }
+
+  if (this->retained_process_started &&
+      this->retained_last_popped_item_time < now - GST_SECOND) {
+    GST_DEBUG_OBJECT (this, "The reatining process is stopped");
+    gst_task_pause (this->retained_thread);
+    this->retained_process_started = FALSE;
+  }
+
+  result = _send_rtp_buffer (this, path, buffer);
+  goto done;
+
+retain_and_done:
+  if (!this->retain_allowed) {
+    result = _send_rtp_buffer (this, path, buffer);
+    goto done;
+  }
+  THIS_READUNLOCK (this);
+  THIS_WRITELOCK (this);
+  if (!_retain_buffer (this, buffer)) {
+    GST_WARNING_OBJECT (this, "Can not retain buffer");
+    result = GST_FLOW_CUSTOM_ERROR;
+  } else {
+    gst_buffer_ref (buffer);
+  }
+  THIS_WRITEUNLOCK (this);
+  return result;
+done:
+  THIS_READUNLOCK (this);
+  return result;
+}
+
+gboolean
+_do_retain_buffer (GstMprtpscheduler * this,
+    GstBuffer * buffer, MPRTPSPath ** selected)
+{
+  *selected = stream_splitter_get_next_path (this->splitter, buffer);
+  if (*selected == NULL) {
+    GST_WARNING_OBJECT (this, "No active subflow");
+    return TRUE;
+  }
+  if (mprtps_path_is_overused (*selected)) {
+    GST_WARNING_OBJECT (this, "Paths are overused");
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+GstFlowReturn
+_send_rtp_buffer (GstMprtpscheduler * this,
+    MPRTPSPath * path, GstBuffer * buffer)
+{
+  GstFlowReturn result = GST_FLOW_OK;
+  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
+  GstBuffer *outbuf;
+  RTPAbsTimeExtension data;
+  GstClockTime now;
+  guint32 time;
+
   outbuf = gst_buffer_make_writable (buffer);
   if (G_UNLIKELY (!gst_rtp_buffer_map (outbuf, GST_MAP_READWRITE, &rtp))) {
     GST_WARNING_OBJECT (this, "The RTP packet is not writeable");
-    return GST_FLOW_ERROR;
+    goto done;
   }
-  THIS_READLOCK (this);
-  stream_splitter_process_rtp_packet (this->splitter, &rtp);
+  mprtps_path_process_rtp_packet (path, this->mprtp_ext_header_id, &rtp);
 
-  //gst_print_rtp_packet_info(&rtp);
+  //Absolute sending time
+  now = gst_clock_get_time (this->sysclock);
+  //https://tools.ietf.org/html/draft-alvestrand-rmcat-remb-03
+  time = (guint32) (now >> 14) & 0x00ffffff;
+  memcpy (&data, &time, 3);
+  gst_rtp_buffer_add_extension_onebyte_header (&rtp,
+      this->abs_time_ext_header_id, (gpointer) & data, sizeof (data));
   gst_rtp_buffer_unmap (&rtp);
+
   result = gst_pad_push (this->mprtp_srcpad, outbuf);
   if (!this->riport_flow_signal_sent) {
     this->riport_flow_signal_sent = TRUE;
     this->riport_can_flow (this->controller);
   }
-
-  THIS_READUNLOCK (this);
-
-  GST_DEBUG_OBJECT (this, "chain is unlocked");
-
+done:
   return result;
 }
-
 
 static GstFlowReturn
 gst_mprtpscheduler_rtp_sink_chainlist (GstPad * pad, GstObject * parent,
@@ -659,31 +903,15 @@ gst_mprtpscheduler_mprtcp_rr_sink_chain (GstPad * pad, GstObject * parent,
     GstBuffer * buf)
 {
   GstMprtpscheduler *this;
-  GstMapInfo info;
-  guint8 *data;
   GstFlowReturn result;
-
 
   this = GST_MPRTPSCHEDULER (parent);
   GST_DEBUG_OBJECT (this, "RTCP/MPRTCP sink");
   THIS_READLOCK (this);
-  if (!gst_buffer_map (buf, &info, GST_MAP_READ)) {
-    GST_WARNING ("Buffer is not readable");
-    result = GST_FLOW_ERROR;
-    goto done;
-  }
-  data = info.data + 1;
-  gst_buffer_unmap (buf, &info);
-
-  if (*data != MPRTCP_PACKET_TYPE_IDENTIFIER) {
-    GST_WARNING_OBJECT (this, "mprtcp_sr_sink process only MPRTCP packets");
-    result = GST_FLOW_OK;
-    goto done;
-  }
 
   this->mprtcp_receiver (this->controller, buf);
+
   result = GST_FLOW_OK;
-done:
   THIS_READUNLOCK (this);
   return result;
 
@@ -715,6 +943,121 @@ gst_mprtpscheduler_sink_query (GstPad * sinkpad, GstObject * parent,
 
   return result;
 }
+
+
+void
+gst_mprtpscheduler_retain_process_run (void *data)
+{
+  GstMprtpscheduler *this;
+  GstClockID clock_id;
+  GstClockTime next_scheduler_time;
+  GstBuffer *buf;
+  MPRTPSPath *path;
+  GstClockTime now;
+  this = (GstMprtpscheduler *) data;
+
+  THIS_WRITELOCK (this);
+  now = gst_clock_get_time (this->sysclock);
+  while (_retain_queue_head (this, &buf)) {
+    if (_do_retain_buffer (this, buf, &path)) {
+      goto done;
+    }
+    _retain_queue_pop (this);
+    if (_send_rtp_buffer (this, path, buf) != GST_FLOW_OK) {
+      GST_WARNING_OBJECT (this, "Sending mprtp buffer was not successful");
+      goto done;
+    }
+  }
+done:
+  next_scheduler_time = now + 10 * GST_MSECOND;
+  clock_id = gst_clock_new_single_shot_id (this->sysclock, next_scheduler_time);
+  THIS_WRITEUNLOCK (this);
+
+  if (gst_clock_id_wait (clock_id, NULL) == GST_CLOCK_UNSCHEDULED) {
+    GST_WARNING_OBJECT (this, "The scheduler clock wait is interrupted");
+  }
+  gst_clock_id_unref (clock_id);
+}
+
+gboolean
+_retain_buffer (GstMprtpscheduler * this, GstBuffer * buf)
+{
+  gboolean result;
+
+  result =
+      _retain_queue_try_push (this, buf, gst_clock_get_time (this->sysclock));
+  if (result == FALSE) {
+    return FALSE;
+  }
+  if (gst_task_get_state (this->retained_thread) != GST_TASK_STARTED) {
+    result &= gst_task_start (this->retained_thread);
+    this->retained_process_started = TRUE;
+  }
+  return result;
+}
+
+
+//ref the buffer!
+gboolean
+_retain_queue_try_push (GstMprtpscheduler * this, GstBuffer * buf,
+    GstClockTime time)
+{
+  if (this->retained_queue_counter == SCHEDULER_RETAIN_QUEUE_MAX_ITEMS) {
+    return FALSE;
+  }
+  this->retained_queue[this->retained_queue_write_index].time = time;
+  this->retained_queue[this->retained_queue_write_index].buffer = buf;
+  this->retained_queue_write_index += 1;
+  this->retained_queue_write_index &= SCHEDULER_RETAIN_QUEUE_MAX_ITEMS;
+  ++this->retained_queue_counter;
+
+  return TRUE;
+}
+
+
+gboolean
+_retain_queue_try_pull (GstMprtpscheduler * this, GstBuffer ** buffer)
+{
+  if (!_retain_queue_head (this, buffer)) {
+    return FALSE;
+  }
+  _retain_queue_pop (this);
+  return TRUE;
+}
+
+
+gboolean
+_retain_queue_head (GstMprtpscheduler * this, GstBuffer ** result)
+{
+  GstBuffer *buffer;
+  if (this->retained_queue_counter == 0) {
+    return FALSE;
+  }
+
+  buffer = this->retained_queue[this->retained_queue_read_index].buffer;
+
+  *result = buffer;
+  return TRUE;
+}
+
+
+
+void
+_retain_queue_pop (GstMprtpscheduler * this)
+{
+  GstClockTime now;
+  now = gst_clock_get_time (this->sysclock);
+  if (this->retained_queue_counter == 0) {
+    return;
+  }
+  this->retained_last_popped_item_time = now;
+  this->retained_queue_read_index += 1;
+  this->retained_queue_read_index &= SCHEDULER_RETAIN_QUEUE_MAX_ITEMS;
+  --this->retained_queue_counter;
+
+}
+
+
 
 
 gboolean
@@ -757,14 +1100,16 @@ _change_auto_flow_controlling_mode (GstMprtpscheduler * this,
         this, gst_mprtpscheduler_mprtcp_sender);
 
     sefctrler_set_callbacks (&this->riport_can_flow,
-        &this->controller_add_path, &this->controller_rem_path);
+        &this->controller_add_path,
+        &this->controller_rem_path, &this->controller_pacing);
   } else {
     this->controller = g_object_new (SMANCTRLER_TYPE, NULL);
     this->mprtcp_receiver = smanctrler_setup_mprtcp_exchange (this->controller,
         this, gst_mprtpscheduler_mprtcp_sender);
 
     smanctrler_set_callbacks (&this->riport_can_flow,
-        &this->controller_add_path, &this->controller_rem_path);
+        &this->controller_add_path,
+        &this->controller_rem_path, &this->controller_pacing);
   }
   this->riport_flow_signal_sent = FALSE;
   g_hash_table_iter_init (&iter, this->paths);
@@ -811,4 +1156,5 @@ _change_path_state (GstMprtpscheduler * this, guint8 subflow_id,
 #undef MPRTP_SENDER_DEFAULT_ALPHA_VALUE
 #undef MPRTP_SENDER_DEFAULT_BETA_VALUE
 #undef MPRTP_SENDER_DEFAULT_GAMMA_VALUE
-#undef PACKET_IS_RTP
+#undef PACKET_IS_RTP_OR_RTCP
+#undef MPRTP_DEFAULT_MAX_RETAIN_TIME_IN_MS

@@ -275,6 +275,8 @@ request_aux_receiver (GstElement * rtpbin, guint sessid, SessionData * session)
   return bin;
 }
 
+#define SUBFLOW_2
+
 static void
 join_session (GstElement * pipeline, GstElement * rtpBin, SessionData * session,
     guint32 clockrate)
@@ -395,10 +397,10 @@ main (int argc, char **argv)
       "rtp-profile", GST_RTP_PROFILE_AVPF, NULL);
 
   videoSession = make_video_session (0);
-  audioSession = make_audio_session (1);
+  //audioSession = make_audio_session (1);
 
   join_session (GST_ELEMENT (pipe), rtpBin, videoSession, 90000);
-  join_session (GST_ELEMENT (pipe), rtpBin, audioSession, 8000);
+  //join_session (GST_ELEMENT (pipe), rtpBin, audioSession, 8000);
 
   g_print ("starting client pipeline\n");
   gst_element_set_state (GST_ELEMENT (pipe), GST_STATE_PLAYING);

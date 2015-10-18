@@ -12,6 +12,7 @@
 
 #include "mprtprpath.h"
 #include "smanctrler.h"
+#include "streamjoiner.h"
 
 typedef struct _RcvManualController RcvManualController;
 typedef struct _RcvManualControllerClass RcvManualControllerClass;
@@ -27,15 +28,19 @@ typedef struct _RcvManualControllerClass RcvManualControllerClass;
 struct _RcvManualController
 {
   GObject          object;
+  StreamJoiner*    joiner;
 };
 
 struct _RcvManualControllerClass{
   GObjectClass parent_class;
 };
 
+
+void rmanctrler_setup(gpointer this,
+                     StreamJoiner* splitter);
 //Class functions
 void rmanctrler_set_callbacks(void(**riport_can_flow_indicator)(gpointer),
-                             void(**controller_add_path)(gpointer,guint8,MPRTPRPath*),
+                             void(**controller_add_path)(gpointer,guint8,MpRTPRPath*),
                              void(**controller_rem_path)(gpointer,guint8));
 GstBufferReceiverFunc
 rmanctrler_setup_mprtcp_exchange(RcvManualController *this,

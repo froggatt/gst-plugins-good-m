@@ -241,11 +241,12 @@ typedef struct _Identities
 
 
 static gboolean
-_timeout_callback_manual (gpointer data)
+_mprtpsch_bidding_test_cb (gpointer data)
 {
   Identities *ids = data;
 
-  g_print ("Called %d\n", ids->called);
+  g_print ("MpRTP Scheduler setup bidding test, called %d\n", ids->called);
+
   switch (ids->called) {
     case 0:
       g_object_set (ids->mprtpsch,
@@ -274,8 +275,38 @@ _timeout_callback_manual (gpointer data)
     default:
       break;
   }
-  ++ids->called;
-  return TRUE;
+  return ++ids->called > 3 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
+}
+
+
+
+static gboolean
+_mprtpsch_path_lossy_test_cb (gpointer data)
+{
+  Identities *ids = data;
+
+  g_print ("Congestion control losy test %d\n", ids->called);
+
+  switch (ids->called) {
+    case 0:
+      g_print ("Subflow 1 drop: 0.2, subflow 2 dropp: 0.0\n");
+      g_object_set (ids->identity_s1, "drop-probability", 0.2, NULL);
+      g_object_set (ids->identity_s2, "drop-probability", 0.0, NULL);
+      break;
+    case 2:
+      g_print ("Subflow 1 drop: 0.0, subflow 2 dropp: 0.2\n");
+      g_object_set (ids->identity_s1, "drop-probability", 0.0, NULL);
+      g_object_set (ids->identity_s2, "drop-probability", 0.2, NULL);
+      break;
+    case 4:
+      g_print ("Subflow 1 drop: 0., subflow 2 dropp: 0.\n");
+      g_object_set (ids->identity_s1, "drop-probability", 0., NULL);
+      g_object_set (ids->identity_s2, "drop-probability", 0., NULL);
+      break;
+    default:
+      break;
+  }
+  return ++ids->called > 4 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
 }
 
 
@@ -338,7 +369,8 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
   //g_object_set (identity, "drop-probability", 0.1, NULL);
 
   //g_timeout_add (10000, _timeout_callback, ids);
-  g_timeout_add (10000, _timeout_callback_manual, ids);
+  //g_timeout_add (10000, _mprtpsch_bidding_test_cb, ids);
+  g_timeout_add (10000, _mprtpsch_path_lossy_test_cb, ids);
 
   padName = g_strdup_printf ("send_rtp_sink_%u", session->sessionNum);
   gst_element_link_pads (session->input, "src", rtpBin, padName);
@@ -362,6 +394,7 @@ add_stream (GstPipeline * pipe, GstElement * rtpBin, SessionData * session)
 
   g_object_set (mprtpsch, "join-subflow", 1, NULL);
   g_object_set (mprtpsch, "join-subflow", 2, NULL);
+  //g_object_set (mprtprcv, "report-only", TRUE, NULL);
 
 
   padName = g_strdup_printf ("send_rtcp_src_%u", session->sessionNum);
@@ -414,9 +447,9 @@ main (int argc, char **argv)
   gst_bin_add (GST_BIN (pipe), rtpBin);
 
   videoSession = make_video_session (0);
-  audioSession = make_audio_session (1);
+  //audioSession = make_audio_session (1);
   add_stream (pipe, rtpBin, videoSession);
-  add_stream (pipe, rtpBin, audioSession);
+  //add_stream (pipe, rtpBin, audioSession);
 
   g_print ("starting server pipeline\n");
   gst_element_set_state (GST_ELEMENT (pipe), GST_STATE_PLAYING);
